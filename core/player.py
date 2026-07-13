@@ -16,10 +16,9 @@ import sources.direct as direct_source
 
 
 class GuildPlayer:
-    def __init__(self, guild_id: int, queue: GuildQueue, bot: discord.Client):
+    def __init__(self, guild_id: int, queue: GuildQueue):
         self.guild_id = guild_id
         self.queue = queue
-        self.bot = bot
         self.voice_client: Optional[discord.VoiceClient] = None
         # called whenever a new track starts playing, async so the cog
         # can update the now playing message and wait on it if needed
@@ -176,7 +175,6 @@ class PlayerManager:
 
     def __init__(self, queue_manager):
         self.queue_manager = queue_manager
-        self.bot = bot
         self._players: dict[int, GuildPlayer] = {}
 
     def get(self, guild_id: int) -> GuildPlayer:

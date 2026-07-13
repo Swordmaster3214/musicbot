@@ -82,7 +82,7 @@ class Music(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.queue_manager = QueueManager()
-        self.player_manager = PlayerManager(self.queue_manager, self.bot)
+        self.player_manager = PlayerManager(self.queue_manager)
         self.cache = SongCache()
 
         # tracks the one now playing message per guild so we can edit

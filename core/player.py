@@ -16,9 +16,10 @@ import sources.direct as direct_source
 
 
 class GuildPlayer:
-    def __init__(self, guild_id: int, queue: GuildQueue):
+    def __init__(self, guild_id: int, queue: GuildQueue, bot):
         self.guild_id = guild_id
         self.queue = queue
+        self.bot = bot
         self.voice_client: Optional[discord.VoiceClient] = None
         # called whenever a new track starts playing, async so the cog
         # can update the now playing message and wait on it if needed
@@ -28,6 +29,10 @@ class GuildPlayer:
         # needed for manual jumps (seeking) where we've already restarted
         # playback ourselves and don't want a double advance.
         self._suppress_auto_advance = False
+        # when true, the next advance ignores track loop. set right
+        # before an explicit skip or stop, so a looped track doesn't
+        # just come right back after the user asked to move past it.
+        self._force_ignore_loop = False
 
         # playback position tracking, used for seeking. accum holds
         # seconds already played before the current segment, segment_start
@@ -37,9 +42,6 @@ class GuildPlayer:
         self._segment_start = None
 
     def is_connected(self) -> bool:
-        guild = self.bot.get_guild(self.guild_id)
-        if guild and guild.voice_client:
-            self.voice_client = guild.voice_client
         return self.voice_client is not None and self.voice_client.is_connected()
 
     async def connect(self, channel: discord.VoiceChannel):
@@ -50,13 +52,15 @@ class GuildPlayer:
         else:
             self.voice_client = await channel.connect()
 
+        # self deafen so the bot isn't pointlessly receiving audio it
+        # never listens to. this is just our own voice state, it
+        # doesn't need any special server permission to set.
+        await channel.guild.change_voice_state(channel=channel, self_deaf=True)
+
     async def disconnect(self):
         if self.voice_client and self.voice_client.is_connected():
             await self.voice_client.disconnect()
         self.voice_client = None
-
-    def is_connected(self) -> bool:
-        return self.voice_client is not None and self.voice_client.is_connected()
 
     def current_position(self) -> float:
         """Seconds into the current track, accounting for pauses."""
@@ -64,13 +68,13 @@ class GuildPlayer:
             return self._position_accum + (time.time() - self._segment_start)
         return self._position_accum
 
-    async def play_next(self):
+    async def play_next(self, ignore_loop: bool = False):
         """
         Pulls the next track off the queue and plays it. Gets called
         automatically when a song finishes, via the after= callback
         discord.py gives us on VoiceClient.play.
         """
-        track = self.queue.next()
+        track = self.queue.next(ignore_loop=ignore_loop)
         if track is None:
             return  # queue's empty, just sit connected and idle
 
@@ -88,7 +92,7 @@ class GuildPlayer:
         """
         Builds the after= callback for VoiceClient.play. Centralized here
         so every place that starts playback shares the same logic, and
-        the suppress flag only needs to be checked in one spot.
+        the suppress/ignore_loop flags only need to be checked in one spot.
         """
         def _after_playback(error):
             if error:
@@ -98,8 +102,11 @@ class GuildPlayer:
                 self._suppress_auto_advance = False
                 return
 
+            ignore_loop = self._force_ignore_loop
+            self._force_ignore_loop = False
+
             fut = asyncio.run_coroutine_threadsafe(
-                self.play_next(), self.bot.loop
+                self.play_next(ignore_loop=ignore_loop), self.bot.loop
             )
             try:
                 fut.result()
@@ -130,12 +137,35 @@ class GuildPlayer:
         if self.voice_client:
             self.voice_client.stop()
 
-    async def skip(self):
-        """Skips the current track, triggers play_next via the after callback."""
+    async def stop_and_clear(self):
+        """
+        Full stop. Halts playback, wipes the queue, and turns off both
+        loop flags. Loop settings shouldn't be able to keep the queue
+        going after someone explicitly hits stop, that would defeat
+        the whole point of the button.
+        """
+        self._force_ignore_loop = True
+        self.queue.loop_current = False
+        self.queue.loop_queue = False
+
         if self.voice_client and (self.voice_client.is_playing() or self.voice_client.is_paused()):
             self.voice_client.stop()
+
+        self.queue.clear()
+        self.queue.current = None
+
+    async def skip(self):
+        """
+        Skips the current track, ignoring track loop. Queue loop is
+        untouched, so if the queue is set to loop, skipping the last
+        looped track still rolls back around to the start of history
+        like normal.
+        """
+        if self.voice_client and (self.voice_client.is_playing() or self.voice_client.is_paused()):
+            self._force_ignore_loop = True
+            self.voice_client.stop()
         else:
-            await self.play_next()
+            await self.play_next(ignore_loop=True)
 
     async def seek_seconds(self, delta: float):
         """
@@ -162,8 +192,14 @@ class GuildPlayer:
             self._suppress_auto_advance = True
             self.voice_client.stop()
 
-        source_module = direct_source if track.source == "direct" else youtube_source
-        audio_source = await source_module.get_playable_source(track, start_seconds=new_position)
+        # Seeking reuses the stream url we already resolved instead of
+        # asking yt-dlp to re-extract it, that network round trip was
+        # what made seeking feel so slow. We only actually need a fresh
+        # url when a track first starts playing.
+        if track.source == "direct":
+            audio_source = await direct_source.get_playable_source(track, start_seconds=new_position)
+        else:
+            audio_source = youtube_source.get_playable_source_from_cache(track, start_seconds=new_position)
 
         self.voice_client.play(audio_source, after=self._make_after_callback())
         self._position_accum = new_position
@@ -173,12 +209,13 @@ class GuildPlayer:
 class PlayerManager:
     """Holds a GuildPlayer per guild, created lazily alongside its queue."""
 
-    def __init__(self, queue_manager):
+    def __init__(self, bot, queue_manager):
+        self.bot = bot
         self.queue_manager = queue_manager
         self._players: dict[int, GuildPlayer] = {}
 
     def get(self, guild_id: int) -> GuildPlayer:
         if guild_id not in self._players:
             queue = self.queue_manager.get(guild_id)
-            self._players[guild_id] = GuildPlayer(guild_id, queue)
+            self._players[guild_id] = GuildPlayer(guild_id, queue, self.bot)
         return self._players[guild_id]

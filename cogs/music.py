@@ -70,19 +70,32 @@ class NowPlayingView(discord.ui.View):
         queue.shuffle()
         await interaction.response.send_message("Queue shuffled.", ephemeral=True)
 
-    @discord.ui.button(label="Loop", emoji="🔁", style=discord.ButtonStyle.secondary, row=1)
+    @discord.ui.button(label="Loop Track", emoji="🔂", style=discord.ButtonStyle.secondary, row=1)
     async def loop_toggle(self, interaction: discord.Interaction, button: discord.ui.Button):
         queue = self.cog.queue_manager.get(self.guild_id)
         queue.loop_current = not queue.loop_current
         state = "enabled" if queue.loop_current else "disabled"
         await interaction.response.send_message(f"Track loop {state}.", ephemeral=True)
 
+    @discord.ui.button(label="Loop Queue", emoji="🔁", style=discord.ButtonStyle.secondary, row=2)
+    async def queue_loop_toggle(self, interaction: discord.Interaction, button: discord.ui.Button):
+        queue = self.cog.queue_manager.get(self.guild_id)
+        queue.loop_queue = not queue.loop_queue
+        state = "enabled" if queue.loop_queue else "disabled"
+        await interaction.response.send_message(f"Queue loop {state}.", ephemeral=True)
+
+    @discord.ui.button(label="Stop", emoji="⏹️", style=discord.ButtonStyle.danger, row=2)
+    async def stop_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        player = self.cog.player_manager.get(self.guild_id)
+        await player.stop_and_clear()
+        await interaction.response.send_message("Stopped and cleared the queue.", ephemeral=True)
+
 
 class Music(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.queue_manager = QueueManager()
-        self.player_manager = PlayerManager(self.queue_manager)
+        self.player_manager = PlayerManager(self.bot, self.queue_manager)
         self.cache = SongCache()
 
         # tracks the one now playing message per guild so we can edit
@@ -349,8 +362,7 @@ class Music(commands.Cog):
     @app_commands.command(name="stop", description="Stop playback and clear the queue")
     async def stop(self, interaction: discord.Interaction):
         player = self.player_manager.get(interaction.guild_id)
-        player.stop()
-        player.queue.clear()
+        await player.stop_and_clear()
         await interaction.response.send_message("Stopped and cleared the queue.")
 
     @app_commands.command(name="disconnect", description="Disconnect the bot from voice")
@@ -366,6 +378,7 @@ class Music(commands.Cog):
         if queue.current is None:
             await interaction.response.send_message("Nothing is playing right now.")
             return
+        view = NowPlayingView(self, interaction.guild_id)
         await interaction.response.send_message(embed=now_playing_embed(queue.current))
 
     @app_commands.command(name="loop", description="Toggle looping the current track")

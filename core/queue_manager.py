@@ -30,12 +30,12 @@ class GuildQueue:
     def clear(self):
         self.upcoming.clear()
 
-    def next(self) -> Optional[Track]:
+    def next(self, ignore_loop: bool = False) -> Optional[Track]:
         """Advances the queue, pushes the current track into history."""
         if self.current is not None:
             self.history.append(self.current)
 
-        if self.loop_current and self.current is not None:
+        if self.loop_current and not ignore_loop and self.current is not None:
             return self.current
 
         if not self.upcoming:
@@ -97,4 +97,12 @@ class QueueManager:
         return self._queues[guild_id]
 
     def reset(self, guild_id: int):
-        self._queues[guild_id] = GuildQueue()
+        if guild_id in self._queues:
+            queue = self._queues[guild_id]
+            queue.upcoming.clear()
+            queue.history.clear()
+            queue.current = None
+            queue.loop_current = False
+            queue.loop_queue = False
+        else:
+            self._queues[guild_id] = GuildQueue()

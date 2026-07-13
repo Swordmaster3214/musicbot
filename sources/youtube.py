@@ -5,6 +5,7 @@ import yt_dlp
 
 YDL_OPTS = {
     "format": "bestaudio/best",
+    "cookiesfrombrowser": ("firefox",),
     "noplaylist": False,
     "quiet": True,
     "no_warnings": True,
@@ -102,6 +103,16 @@ async def search_or_resolve(query: str) -> list[Track]:
         )
     return tracks
 
+def _build_ffmpeg_source(stream_url: str, start_seconds: float = 0):
+    import discord
+
+    before_options = FFMPEG_OPTS["before_options"]
+    if start_seconds > 0:
+        before_options = f"-ss {start_seconds} {before_options}"
+
+    opts = {"before_options": before_options, "options": FFMPEG_OPTS["options"]}
+    return discord.FFmpegPCMAudio(stream_url, **opts)
+
 async def get_playable_source(track: Track, start_seconds: float = 0):
     """Refreshes the stream url right before playback."""
     import discord
@@ -114,9 +125,16 @@ async def get_playable_source(track: Track, start_seconds: float = 0):
 
     fresh_stream_url = entries[0]["url"]
 
-    before_options = FFMPEG_OPTS["before_options"]
-    if start_seconds > 0:
-        before_options = f"-ss {start_seconds} {before_options}"
+    track.stream_url = fresh_stream_url
 
-    opts = {"before_options": before_options, "options": FFMPEG_OPTS["options"]}
-    return discord.FFmpegPCMAudio(fresh_stream_url, **opts)
+    return _build_ffmpeg_source(fresh_stream_url, start_seconds)
+
+def get_playable_source_from_cache(track: Track, start_seconds: float = 0):
+    """
+    Builds a playable source straight from the track's already-resolved
+    stream url, skipping the yt-dlp round trip. Used for in-song
+    seeking, since the url was just refreshed moments ago and doesn't
+    need to be looked up again. This is what keeps /seekforward and
+    /seekback fast instead of hitting youtube on every nudge.
+    """
+    return _build_ffmpeg_source(track.stream_url, start_seconds)

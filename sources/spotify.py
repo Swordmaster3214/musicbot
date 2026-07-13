@@ -1,7 +1,8 @@
 """
 Spotify doesn't let anyone stream raw audio through the API, so this
-module just pulls track/playlist/album metadata (title + artist) and
-hands each one off to the youtube module to find a matching stream.
+module just pulls track/playlist/album/show/episode metadata (title +
+artist, or episode + show name) and hands each one off to the youtube
+module to find a matching stream.
 
 This is the same approach basically every self-hosted spotify-capable
 discord bot uses under the hood.
@@ -17,7 +18,7 @@ import config
 from sources.youtube import search_or_resolve, Track
 
 SPOTIFY_URL_RE = re.compile(
-    r"open\.spotify\.com/(track|playlist|album)/([a-zA-Z0-9]+)"
+    r"open\.spotify\.com/(track|playlist|album|show|episode)/([a-zA-Z0-9]+)"
 )
 
 _client: Optional[spotipy.Spotify] = None
@@ -46,7 +47,9 @@ def is_spotify_link(url: str) -> bool:
 def _extract_spotify_meta(url: str) -> tuple[str, list[dict]]:
     """
     Blocking spotipy calls, runs in an executor. Returns (kind, list of
-    {title, artist} dicts) for track/playlist/album urls.
+    {title, artist} dicts) for track/playlist/album/show/episode urls.
+    For episodes and shows, "artist" ends up holding the podcast/show
+    name since episodes don't really have an artist in the music sense.
     """
     match = SPOTIFY_URL_RE.search(url)
     if not match:
@@ -77,6 +80,22 @@ def _extract_spotify_meta(url: str) -> tuple[str, list[dict]]:
         metas = [_track_to_meta(t) for t in items]
         return kind, metas
 
+    if kind == "episode":
+        episode = sp.episode(item_id)
+        show_name = episode.get("show", {}).get("name", "")
+        return kind, [{"title": episode["name"], "artist": show_name}]
+
+    if kind == "show":
+        show = sp.show(item_id)
+        show_name = show.get("name", "")
+        results = sp.show_episodes(item_id)
+        items = results["items"]
+        while results["next"]:
+            results = sp.next(results)
+            items.extend(results["items"])
+        metas = [{"title": e["name"], "artist": show_name} for e in items if e]
+        return kind, metas
+
     raise ValueError(f"Unsupported spotify link type: {kind}")
 
 
@@ -88,8 +107,9 @@ def _track_to_meta(track: dict) -> dict:
 async def resolve_spotify_link(url: str) -> list[Track]:
     """
     Pulls metadata for the spotify link, then searches youtube for each
-    track. Playlists get resolved concurrently in small batches so we
-    don't hammer youtube with a hundred requests at once.
+    track or episode. Playlists, albums, and shows get resolved
+    concurrently in small batches so we don't hammer youtube with a
+    hundred requests at once.
     """
     loop = asyncio.get_event_loop()
     kind, metas = await loop.run_in_executor(None, _extract_spotify_meta, url)

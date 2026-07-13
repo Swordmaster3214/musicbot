@@ -1,12 +1,3 @@
-"""
-Handles anything that comes from YouTube, direct video/playlist urls
-or plain text search terms. Uses yt-dlp under the hood since it's
-kept up to date way better than youtube-dl at this point.
-
-We never download files to disk, we just grab the direct audio stream
-url and hand that to ffmpeg through discord.py's voice client. Keeps
-disk usage flat no matter how many songs get played.
-"""
 import asyncio
 from dataclasses import dataclass
 from typing import Optional
@@ -19,7 +10,9 @@ YDL_OPTS = {
     "no_warnings": True,
     "default_search": "ytsearch",
     "extract_flat": False,
-    "source_address": "0.0.0.0",  # helps avoid some ipv6 connection issues
+    "source_address": "0.0.0.0",
+    "socket_timeout": 10,         # Prevents yt-dlp from hanging indefinitely on bad sockets
+    "retries": 3,                 # Give it a few chances before throwing an error
 }
 
 FFMPEG_OPTS = {
@@ -27,12 +20,11 @@ FFMPEG_OPTS = {
     "options": "-vn",
 }
 
-
 @dataclass
 class Track:
     title: str
-    url: str            # the page url, good for caching and display
-    stream_url: str      # the actual audio stream url ffmpeg will read
+    url: str
+    stream_url: str
     duration_seconds: Optional[int]
     artist: Optional[str] = None
     source: str = "youtube"
@@ -41,15 +33,30 @@ class Track:
 
 def _extract(query: str, is_search: bool) -> list[dict]:
     """Runs in a thread executor, yt-dlp is blocking."""
+    print(f"  [YT-DLP] Extracting metadata for: '{query}' (Search mode: {is_search})")
     opts = dict(YDL_OPTS)
-    with yt_dlp.YoutubeDL(opts) as ydl:
-        target = f"ytsearch1:{query}" if is_search else query
-        info = ydl.extract_info(target, download=False)
 
-        # playlists come back with an 'entries' key, single tracks don't
-        if "entries" in info:
-            return [e for e in info["entries"] if e]
-        return [info]
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            target = f"ytsearch1:{query}" if is_search else query
+            info = ydl.extract_info(target, download=False)
+
+            if not info:
+                print(f"  [YT-DLP WARNING] Extraction returned empty info for target: '{target}'")
+                return []
+
+            # playlists come back with an 'entries' key, single tracks don't
+            if "entries" in info:
+                valid_entries = [e for e in info["entries"] if e]
+                print(f"  [YT-DLP] Extracted container/playlist. Found {len(valid_entries)} entries.")
+                return valid_entries
+
+            print(f"  [YT-DLP] Extracted single track details for: '{info.get('title', 'Unknown')}'")
+            return [info]
+
+    except Exception as e:
+        print(f"  [YT-DLP CRITICAL] Extraction failed for target '{query}': {e}")
+        raise
 
 
 async def search_or_resolve(query: str) -> list[Track]:
@@ -59,23 +66,28 @@ async def search_or_resolve(query: str) -> list[Track]:
     """
     is_search = not (query.startswith("http://") or query.startswith("https://"))
     loop = asyncio.get_event_loop()
+
+    print(f"[RESOLVER] Handing query off to thread pool executor...")
     entries = await loop.run_in_executor(None, _extract, query, is_search)
 
     tracks = []
     for entry in entries:
-        # flat playlist entries sometimes lack a direct stream url,
-        # need a second pass to resolve those individually
         stream_url = entry.get("url")
         if not stream_url:
-            resolved = await loop.run_in_executor(
-                None, _extract, entry.get("webpage_url", entry.get("id", "")), False
-            )
+            print(f"[RESOLVER] Entry missing direct stream URL. Attempting secondary pass on webpage/ID...")
+            target_id = entry.get("webpage_url", entry.get("id", ""))
+            if not target_id:
+                print(f"[RESOLVER WARNING] Entry skipped; no usable web identifiers found: {entry.get('title')}")
+                continue
+
+            resolved = await loop.run_in_executor(None, _extract, target_id, False)
             if not resolved:
                 continue
             entry = resolved[0]
             stream_url = entry.get("url")
 
         if not stream_url:
+            print(f"[RESOLVER WARNING] Skipping track '{entry.get('title')}'; stream URL could not be resolved.")
             continue
 
         tracks.append(
@@ -90,20 +102,11 @@ async def search_or_resolve(query: str) -> list[Track]:
         )
     return tracks
 
-
 async def get_playable_source(track: Track, start_seconds: float = 0):
-    """
-    Refreshes the stream url right before playback since these urls
-    expire after a while. Returns an ffmpeg audio source discord.py
-    can play directly.
-
-    start_seconds lets us jump into the middle of a stream, which is
-    how seeking works here. ffmpeg can't seek a stream that's already
-    open, so the caller kills the old process and starts a new one
-    at the offset it wants instead.
-    """
+    """Refreshes the stream url right before playback."""
     import discord
 
+    print(f"[PLAYER] Refreshing stream URL for playback: '{track.title}'")
     loop = asyncio.get_event_loop()
     entries = await loop.run_in_executor(None, _extract, track.url, False)
     if not entries:
@@ -113,8 +116,6 @@ async def get_playable_source(track: Track, start_seconds: float = 0):
 
     before_options = FFMPEG_OPTS["before_options"]
     if start_seconds > 0:
-        # -ss before the input tells ffmpeg to seek before decoding starts,
-        # much faster than seeking after the input is opened
         before_options = f"-ss {start_seconds} {before_options}"
 
     opts = {"before_options": before_options, "options": FFMPEG_OPTS["options"]}

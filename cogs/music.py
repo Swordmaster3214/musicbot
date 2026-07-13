@@ -82,7 +82,7 @@ class Music(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.queue_manager = QueueManager()
-        self.player_manager = PlayerManager(self.queue_manager)
+        self.player_manager = PlayerManager(self.queue_manager, self.bot)
         self.cache = SongCache()
 
         # tracks the one now playing message per guild so we can edit
@@ -100,7 +100,14 @@ class Music(commands.Cog):
 
         guild_id = interaction.guild_id
         player = self.player_manager.get(guild_id)
-        if not player.is_connected():
+
+        if interaction.guild.voice_client:
+            player.voice_client = interaction.guild.voice_client
+
+        if player.is_connected():
+            if player.voice_client.channel != interaction.user.voice.channel:
+                await player.connect(interaction.user.voice.channel)
+        else:
             await player.connect(interaction.user.voice.channel)
 
         # remember where to post/update the now playing message, and
@@ -160,41 +167,58 @@ class Music(commands.Cog):
     @app_commands.command(name="play", description="Play or queue a song from YouTube, Spotify, or a direct link")
     @app_commands.describe(query="A search term, YouTube link, Spotify link, or direct audio file link")
     async def play(self, interaction: discord.Interaction, query: str):
-        await interaction.response.defer()
-        if not await self._ensure_voice(interaction):
-            return
+        print(f"\n[PLAY] Command invoked by {interaction.user} (Guild ID: {interaction.guild_id})")
+        print(f"[PLAY] Query received: '{query}'")
 
-        guild_id = interaction.guild_id
-        queue = self.queue_manager.get(guild_id)
+        await interaction.response.defer()
 
         try:
+            if not await self._ensure_voice(interaction):
+                print("[PLAY] Voice verification failed (User not in a channel or bot couldn't connect.)")
+                return
+
+            guild_id = interaction.guild_id
+            queue = self.queue_manager.get(guild_id)
+
+            print(f"[PLAY] Resolving query through source extractors...")
             tracks = await self._resolve_query(query)
+            print(f"[PLAY] Resolution complete. Found {len(tracks)} track(s).")
+
+            if not tracks:
+                await interaction.followup.send("No results found for that query.")
+                return
+
+            if config.MAX_QUEUE_SIZE and len(queue) + len(tracks) > config.MAX_QUEUE_SIZE:
+                print(f"[PLAY] Aborting: Queue size limit reached")
+                await interaction.followup.send(
+                    f"That would exceed the max queue size of {config.MAX_QUEUE_SIZE}."
+                )
+                return
+
+            print(f"[PLAY] Enqueuing tracks and evaluating cache eligibility...")
+            queue.add_many(tracks)
+            for t in tracks:
+                if t.source == "direct" and not direct_source.has_metadata(t):
+                    continue  # no metadata, requirement says don't cache these
+                self._cache_if_eligible(t)
+
+            print("[PLAY] Booting playback loop if player is currently idle...")
+            await self._start_playback_if_idle(guild_id)
+            print("[PLAY] Playback checks finished successfully.")
+
+            if len(tracks) == 1:
+                await interaction.followup.send(f"Queued **{tracks[0].title}**.")
+            else:
+                await interaction.followup.send(f"Queued **{len(tracks)}** tracks from the playlist.")
         except Exception as e:
-            await interaction.followup.send(f"Couldn't resolve that: {e}")
-            return
+            print(f"\n [CRITICAL ERROR] Exception caught in /play execution chain: {e}")
+            import traceback
+            traceback.print_exc()
 
-        if not tracks:
-            await interaction.followup.send("No results found for that query.")
-            return
-
-        if config.MAX_QUEUE_SIZE and len(queue) + len(tracks) > config.MAX_QUEUE_SIZE:
-            await interaction.followup.send(
-                f"That would exceed the max queue size of {config.MAX_QUEUE_SIZE}."
-            )
-            return
-
-        queue.add_many(tracks)
-        for t in tracks:
-            if t.source == "direct" and not direct_source.has_metadata(t):
-                continue  # no metadata, requirement says don't cache these
-            self._cache_if_eligible(t)
-
-        await self._start_playback_if_idle(guild_id)
-
-        if len(tracks) == 1:
-            await interaction.followup.send(f"Queued **{tracks[0].title}**.")
-        else:
-            await interaction.followup.send(f"Queued **{len(tracks)}** tracks from the playlist.")
+            try:
+                await interaction.followup.send(f"An error occurred while processing your request: {e}")
+            except Exception as followup_err:
+                print(f"[ERROR] Could not send failure followup message: {followup_err}")
 
     async def _resolve_query(self, query: str):
         if spotify_source.is_spotify_link(query):
@@ -214,32 +238,45 @@ class Music(commands.Cog):
     @app_commands.command(name="shuffleplay", description="Play a playlist link with the queue shuffled")
     @app_commands.describe(query="A YouTube or Spotify playlist link")
     async def shuffleplay(self, interaction: discord.Interaction, query: str):
+        print(f"\n[SHUFFLEPLAY] Command invoked by {interaction.user} with query: '{query}'")
         await interaction.response.defer()
-        if not await self._ensure_voice(interaction):
-            return
-
-        guild_id = interaction.guild_id
-        queue = self.queue_manager.get(guild_id)
 
         try:
+            if not await self._ensure_voice(interaction):
+                return
+
+            guild_id = interaction.guild_id
+            queue = self.queue_manager.get(guild_id)
+
+            print("[SHUFFLEPLAY] Resolving playlist query...")
             tracks = await self._resolve_query(query)
+            print(f"[SHUFFLEPLAY] Resolved {len(tracks)} tracks.")
+
+            if not tracks:
+                await interaction.followup.send("No results found for that playlist.")
+                return
+
+            queue.add_many(tracks)
+            queue.shuffle()
+            print("[SHUFFLEPLAY] Queue randomized.")
+
+            for t in tracks:
+                if t.source == "direct" and not direct_source.has_metadata(t):
+                    continue
+                self._cache_if_eligible(t)
+
+            print("[SHUFFLEPLAY] Triggering player...")
+            await self._start_playback_if_idle(guild_id)
+            await interaction.followup.send(f"Queued and shuffled **{len(tracks)}** tracks.")
+
         except Exception as e:
-            await interaction.followup.send(f"Couldn't resolve that: {e}")
-            return
-
-        if not tracks:
-            await interaction.followup.send("No results found for that playlist.")
-            return
-
-        queue.add_many(tracks)
-        queue.shuffle()
-        for t in tracks:
-            if t.source == "direct" and not direct_source.has_metadata(t):
-                continue
-            self._cache_if_eligible(t)
-
-        await self._start_playback_if_idle(guild_id)
-        await interaction.followup.send(f"Queued and shuffled **{len(tracks)}** tracks.")
+            print(f"\n[CRITICAL ERROR] Exception caught in /shuffleplay execution chain: {e}")
+            import traceback
+            traceback.print_exc()
+            try:
+                await interaction.followup.send(f"❌ An error occurred while processing your playlist: {e}")
+            except Exception as followup_err:
+                print(f"[ERROR] Could not send failure followup message: {followup_err}")
 
     @app_commands.command(name="shuffle", description="Shuffle the current queue")
     async def shuffle(self, interaction: discord.Interaction):

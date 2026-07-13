@@ -16,9 +16,10 @@ import sources.direct as direct_source
 
 
 class GuildPlayer:
-    def __init__(self, guild_id: int, queue: GuildQueue):
+    def __init__(self, guild_id: int, queue: GuildQueue, bot: discord.Client):
         self.guild_id = guild_id
         self.queue = queue
+        self.bot = bot
         self.voice_client: Optional[discord.VoiceClient] = None
         # called whenever a new track starts playing, async so the cog
         # can update the now playing message and wait on it if needed
@@ -34,10 +35,18 @@ class GuildPlayer:
         # is the wall clock time the current segment began. no segment
         # start means we're paused or stopped.
         self._position_accum = 0.0
-        self._segment_start: Optional[float] = None
+        self._segment_start = None
+
+    def is_connected(self) -> bool:
+        guild = self.bot.get_guild(self.guild_id)
+        if guild and guild.voice_client:
+            self.voice_client = guild.voice_client
+        return self.voice_client is not None and self.voice_client.is_connected()
 
     async def connect(self, channel: discord.VoiceChannel):
-        if self.voice_client and self.voice_client.is_connected():
+        guild_vc = channel.guild.voice_client
+        if guild_vc and guild_vc.is_connected():
+            self.voice_client = guild_vc
             await self.voice_client.move_to(channel)
         else:
             self.voice_client = await channel.connect()
@@ -91,7 +100,7 @@ class GuildPlayer:
                 return
 
             fut = asyncio.run_coroutine_threadsafe(
-                self.play_next(), asyncio.get_event_loop()
+                self.play_next(), self.bot.loop
             )
             try:
                 fut.result()
@@ -167,6 +176,7 @@ class PlayerManager:
 
     def __init__(self, queue_manager):
         self.queue_manager = queue_manager
+        self.bot = bot
         self._players: dict[int, GuildPlayer] = {}
 
     def get(self, guild_id: int) -> GuildPlayer:

@@ -4,16 +4,21 @@ from typing import Optional
 import yt_dlp
 
 YDL_OPTS = {
-    "format": "bestaudio/best",
+    "format": "bestaudio[ext=m4a]/bestaudio/best",
     "cookiesfrombrowser": ("firefox",),
     "noplaylist": False,
-    "quiet": True,
-    "no_warnings": True,
+    "quiet": False,
+    "no_warnings": False,
     "default_search": "ytsearch",
     "extract_flat": False,
     "source_address": "0.0.0.0",
     "socket_timeout": 10,         # Prevents yt-dlp from hanging indefinitely on bad sockets
     "retries": 3,                 # Give it a few chances before throwing an error
+    "extractor_args": {
+        "youtube": {
+            "player_client" : ["default", "mweb", "android", "ios", "web"]
+        }
+    },
 }
 
 FFMPEG_OPTS = {
@@ -55,6 +60,31 @@ def _extract(query: str, is_search: bool) -> list[dict]:
             print(f"  [YT-DLP] Extracted single track details for: '{info.get('title', 'Unknown')}'")
             return [info]
 
+    except yt_dlp.utils.DownloadError as e:
+        # Format unavailability slips through even with the client
+        # fallback list above sometimes, since YouTube's rollout isn't
+        # all-or-nothing. One more attempt with the loosest possible
+        # selector before giving up, better to hand back something
+        # playable (even if it's not audio-only) than to fail the
+        # whole /play command over a format quirk.
+        if "Requested format is not available" in str(e):
+            print(f"  [YT-DLP] Format fallback triggered for '{query}', retrying with format='best'...")
+            fallback_opts = dict(opts)
+            fallback_opts["format"] = "best"
+            try:
+                with yt_dlp.YoutubeDL(fallback_opts) as ydl:
+                    target = f"ytsearch1:{query}" if is_search else query
+                    info = ydl.extract_info(target, download=False)
+                    if not info:
+                        return []
+                    if "entries" in info:
+                        return [e for e in info["entries"] if e]
+                    return [info]
+            except Exception as retry_err:
+                print(f"  [YT-DLP CRITICAL] Fallback extraction also failed for '{query}': {retry_err}")
+                raise
+        print(f"  [YT-DLP CRITICAL] Extraction failed for target '{query}': {e}")
+        raise
     except Exception as e:
         print(f"  [YT-DLP CRITICAL] Extraction failed for target '{query}': {e}")
         raise
@@ -63,13 +93,22 @@ def _extract(query: str, is_search: bool) -> list[dict]:
 async def search_or_resolve(query: str) -> list[Track]:
     """
     Takes either a search term or a youtube url (video or playlist)
-    and returns a list of Track objects ready to queue up.
+    and returns a list of Track objects ready to queue up. Individual
+    entries that fail extraction (SABR/PO-token gating, region locks,
+    etc) are skipped rather than blowing up the whole search, since
+    with this stuff being a moving target on YouTube's end, we can
+    expect a handful of tracks to be temporarily unresolvable no
+    matter how up to date our extraction setup is.
     """
     is_search = not (query.startswith("http://") or query.startswith("https://"))
     loop = asyncio.get_event_loop()
 
     print(f"[RESOLVER] Handing query off to thread pool executor...")
-    entries = await loop.run_in_executor(None, _extract, query, is_search)
+    try:
+        entries = await loop.run_in_executor(None, _extract, query, is_search)
+    except Exception as e:
+        print(f"[RESOLVER] Extraction failed entirely for '{query}': {e}")
+        return []
 
     tracks = []
     for entry in entries:
@@ -81,7 +120,11 @@ async def search_or_resolve(query: str) -> list[Track]:
                 print(f"[RESOLVER WARNING] Entry skipped; no usable web identifiers found: {entry.get('title')}")
                 continue
 
-            resolved = await loop.run_in_executor(None, _extract, target_id, False)
+            try:
+                resolved = await loop.run_in_executor(None, _extract, target_id, False)
+            except Exception as e:
+                print(f"[RESOLVER] Secondary extraction failed for '{entry.get('title')}', skipping: {e}")
+                continue
             if not resolved:
                 continue
             entry = resolved[0]

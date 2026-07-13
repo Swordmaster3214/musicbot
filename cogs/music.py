@@ -117,11 +117,7 @@ class Music(commands.Cog):
         if interaction.guild.voice_client:
             player.voice_client = interaction.guild.voice_client
 
-        if player.is_connected():
-            if player.voice_client.channel != interaction.user.voice.channel:
-                await player.connect(interaction.user.voice.channel)
-        else:
-            await player.connect(interaction.user.voice.channel)
+        await player.connect(interaction.user.voice.channel)
 
         # remember where to post/update the now playing message, and
         # hook up the callback so the player can drive that update

@@ -34,6 +34,8 @@ class GuildPlayer:
         # just come right back after the user asked to move past it.
         self._force_ignore_loop = False
 
+        self._connect_lock = asyncio.Lock()
+
         # playback position tracking, used for seeking. accum holds
         # seconds already played before the current segment, segment_start
         # is the wall clock time the current segment began. no segment
@@ -45,17 +47,19 @@ class GuildPlayer:
         return self.voice_client is not None and self.voice_client.is_connected()
 
     async def connect(self, channel: discord.VoiceChannel):
-        guild_vc = channel.guild.voice_client
-        if guild_vc and guild_vc.is_connected():
-            self.voice_client = guild_vc
-            await self.voice_client.move_to(channel)
-        else:
-            self.voice_client = await channel.connect()
+        async with self._connect_lock:
+            guild_vc = channel.guild.voice_client
+            if guild_vc and guild_vc.is_connected():
+                self.voice_client = guild_vc
+                if self.voice_client.channel != channel:
+                    await self.voice_client.move_to(channel)
+            else:
+                self.voice_client = await channel.connect()
 
-        # self deafen so the bot isn't pointlessly receiving audio it
-        # never listens to. this is just our own voice state, it
-        # doesn't need any special server permission to set.
-        await channel.guild.change_voice_state(channel=channel, self_deaf=True)
+            # self deafen so the bot isn't pointlessly receiving audio it
+            # never listens to. this is just our own voice state, it
+            # doesn't need any special server permission to set.
+            await channel.guild.change_voice_state(channel=channel, self_deaf=True)
 
     async def disconnect(self):
         if self.voice_client and self.voice_client.is_connected():

@@ -374,8 +374,16 @@ class Music(commands.Cog):
         if queue.current is None:
             await interaction.response.send_message("Nothing is playing right now.")
             return
+
+        guild_id = interaction.guild_id
+        embed = now_playing_embed(queue.current)
         view = NowPlayingView(self, interaction.guild_id)
-        await interaction.response.send_message(embed=now_playing_embed(queue.current))
+
+        self.now_playing_channels[guild_id] = interaction.channel
+
+        message = await interaction.response.send_message(embed=embed, view=view)
+
+        self.now_playing_messages[guild_id] = message
 
     @app_commands.command(name="loop", description="Toggle looping the current track")
     async def loop(self, interaction: discord.Interaction):

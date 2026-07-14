@@ -37,10 +37,18 @@ class Track:
     thumbnail: Optional[str] = None
 
 
-def _extract(query: str, is_search: bool) -> list[dict]:
+def _extract(query: str, is_search: bool, flat: bool = False) -> list[dict]:
     """Runs in a thread executor, yt-dlp is blocking."""
-    print(f"  [YT-DLP] Extracting metadata for: '{query}' (Search mode: {is_search})")
+    print(f"  [YT-DLP] Extracting metadata for: '{query}' (Search mode: {is_search}, Flat: {flat})")
     opts = dict(YDL_OPTS)
+    if flat:
+        # skips resolving an actual playable stream for every entry, just
+        # lists them out with whatever metadata the playlist/search API
+        # JSON already hands us for free (title, duration, uploader, etc).
+        # this is the difference between one request and sixty separate
+        # PO token/JS challenge round trips just to build a queue nobody
+        # has actually listened to yet
+        opts["extract_flat"] = "in_playlist"
 
     try:
         with yt_dlp.YoutubeDL(opts) as ydl:
@@ -90,58 +98,66 @@ def _extract(query: str, is_search: bool) -> list[dict]:
         raise
 
 
+def _thumbnail_from_entry(entry: dict) -> Optional[str]:
+    """
+    Flat entries store thumbnails a bit differently than fully resolved
+    ones (a list of candidates instead of one single field), so check
+    both spots instead of assuming the shape.
+    """
+    thumb = entry.get("thumbnail")
+    if thumb:
+        return thumb
+    thumbs = entry.get("thumbnails")
+    if thumbs:
+        return thumbs[-1].get("url")
+    return None
+
+
 async def search_or_resolve(query: str) -> list[Track]:
     """
     Takes either a search term or a youtube url (video or playlist)
-    and returns a list of Track objects ready to queue up. Individual
-    entries that fail extraction (SABR/PO-token gating, region locks,
-    etc) are skipped rather than blowing up the whole search, since
-    with this stuff being a moving target on YouTube's end, we can
-    expect a handful of tracks to be temporarily unresolvable no
-    matter how up to date our extraction setup is.
+    and returns a list of Track objects ready to queue up.
+
+    This only does a flat listing pass here, it grabs title/duration/
+    uploader for every entry but doesn't resolve an actual playable
+    stream for any of them yet. That part happens in
+    get_playable_source, right before a track actually plays.
+
+    We used to resolve a real stream for every single entry up front,
+    which meant a 60 track playlist went through the full PO token/JS
+    challenge dance sixty times just to build the queue, and then did
+    it all again for each song once it actually got played. Now that
+    expensive part only happens once, right when a given track is
+    about to start, instead of twice for everything in the queue.
     """
     is_search = not (query.startswith("http://") or query.startswith("https://"))
     loop = asyncio.get_event_loop()
 
     print(f"[RESOLVER] Handing query off to thread pool executor...")
     try:
-        entries = await loop.run_in_executor(None, _extract, query, is_search)
+        entries = await loop.run_in_executor(None, _extract, query, is_search, True)
     except Exception as e:
         print(f"[RESOLVER] Extraction failed entirely for '{query}': {e}")
         return []
 
     tracks = []
     for entry in entries:
-        stream_url = entry.get("url")
-        if not stream_url:
-            print(f"[RESOLVER] Entry missing direct stream URL. Attempting secondary pass on webpage/ID...")
-            target_id = entry.get("webpage_url", entry.get("id", ""))
-            if not target_id:
-                print(f"[RESOLVER WARNING] Entry skipped; no usable web identifiers found: {entry.get('title')}")
-                continue
-
-            try:
-                resolved = await loop.run_in_executor(None, _extract, target_id, False)
-            except Exception as e:
-                print(f"[RESOLVER] Secondary extraction failed for '{entry.get('title')}', skipping: {e}")
-                continue
-            if not resolved:
-                continue
-            entry = resolved[0]
-            stream_url = entry.get("url")
-
-        if not stream_url:
-            print(f"[RESOLVER WARNING] Skipping track '{entry.get('title')}'; stream URL could not be resolved.")
+        webpage_url = entry.get("webpage_url") or entry.get("url") or query
+        if not webpage_url:
+            print(f"[RESOLVER WARNING] Entry skipped; no usable web identifier found: {entry.get('title')}")
             continue
 
         tracks.append(
             Track(
                 title=entry.get("title", "Unknown title"),
-                url=entry.get("webpage_url", query),
-                stream_url=stream_url,
+                url=webpage_url,
+                # left empty on purpose, get_playable_source resolves a
+                # fresh stream right before playback anyway so doing it
+                # here too would just be the same work twice
+                stream_url=None,
                 duration_seconds=entry.get("duration"),
-                artist=entry.get("uploader"),
-                thumbnail=entry.get("thumbnail"),
+                artist=entry.get("uploader") or entry.get("channel"),
+                thumbnail=_thumbnail_from_entry(entry),
             )
         )
     return tracks

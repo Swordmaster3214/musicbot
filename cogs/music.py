@@ -381,7 +381,8 @@ class Music(commands.Cog):
 
         self.now_playing_channels[guild_id] = interaction.channel
 
-        message = await interaction.response.send_message(embed=embed, view=view)
+        await interaction.response.send_message(embed=embed, view=view)
+        message = await interaction.original_response()
 
         self.now_playing_messages[guild_id] = message
 

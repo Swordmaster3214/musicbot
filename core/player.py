@@ -36,6 +36,21 @@ class GuildPlayer:
 
         self._connect_lock = asyncio.Lock()
 
+        # guards the whole "check if idle, pop next track, resolve its
+        # stream, start playback" sequence. without this, two /play
+        # commands landing at the same time can both see the player as
+        # idle and both try to call voice_client.play(), and discord.py
+        # throws "already playing" on the second one after the track has
+        # already been popped off the queue, so it just vanishes.
+        self._playback_lock = asyncio.Lock()
+
+        # holds whatever resolution work (yt-dlp stream lookup, or an
+        # autoplay mix pull) is currently in flight during play_next, so
+        # stop_and_clear can cancel it. without this, hitting stop while
+        # a track is still resolving does nothing, and the track starts
+        # playing anyway a few seconds later once the lookup finishes.
+        self._resolve_task: Optional[asyncio.Task] = None
+
         # playback position tracking, used for seeking. accum holds
         # seconds already played before the current segment, segment_start
         # is the wall clock time the current segment began. no segment
@@ -77,21 +92,42 @@ class GuildPlayer:
         Pulls the next track off the queue and plays it. Gets called
         automatically when a song finishes, via the after= callback
         discord.py gives us on VoiceClient.play.
+
+        Everything from the idle check through the actual play() call
+        happens under _playback_lock, so if two callers land here at
+        the same time (two /play commands racing, or a natural advance
+        overlapping a manual one), only the first actually starts a
+        track. The second sees is_playing() true once it gets the lock
+        and just backs off, its track stays queued and gets picked up
+        on the next natural advance.
         """
-        track = self.queue.next(ignore_loop=ignore_loop)
+        async with self._playback_lock:
+            if self.voice_client and (self.voice_client.is_playing() or self.voice_client.is_paused()):
+                return
 
-        if track is None and self.queue.autoplay:
-            track = await self._pull_autoplay_track()
+            track = self.queue.next(ignore_loop=ignore_loop)
 
-        if track is None:
-            return  # queue's empty and autoplay is off (or came up dry), just sit idle
+            try:
+                if track is None and self.queue.autoplay:
+                    self._resolve_task = asyncio.ensure_future(self._pull_autoplay_track())
+                    track = await self._resolve_task
 
-        source_module = direct_source if track.source == "direct" else youtube_source
-        audio_source = await source_module.get_playable_source(track)
+                if track is None:
+                    return  # queue's empty and autoplay is off (or came up dry), just sit idle
 
-        self.voice_client.play(audio_source, after=self._make_after_callback())
-        self._position_accum = 0.0
-        self._segment_start = time.time()
+                source_module = direct_source if track.source == "direct" else youtube_source
+                self._resolve_task = asyncio.ensure_future(source_module.get_playable_source(track))
+                audio_source = await self._resolve_task
+            except asyncio.CancelledError:
+                # stop_and_clear cancelled us mid-lookup, bail out quietly
+                # instead of starting a track nobody asked for anymore
+                return
+            finally:
+                self._resolve_task = None
+
+            self.voice_client.play(audio_source, after=self._make_after_callback())
+            self._position_accum = 0.0
+            self._segment_start = time.time()
 
         if self.on_track_start:
             await self.on_track_start(track)
@@ -176,10 +212,20 @@ class GuildPlayer:
         loop flags. Loop settings shouldn't be able to keep the queue
         going after someone explicitly hits stop, that would defeat
         the whole point of the button.
+
+        Also cancels any resolution work play_next might currently be
+        doing in the background (a yt-dlp stream lookup, an autoplay
+        mix pull). Without this, stop only stops what's audibly
+        playing right now, and a track that was mid-lookup when stop
+        was pressed just starts playing on its own a moment later once
+        that lookup finishes, even though the queue is supposedly empty.
         """
         self._force_ignore_loop = True
         self.queue.loop_current = False
         self.queue.loop_queue = False
+
+        if self._resolve_task is not None and not self._resolve_task.done():
+            self._resolve_task.cancel()
 
         if self.voice_client and (self.voice_client.is_playing() or self.voice_client.is_paused()):
             self.voice_client.stop()

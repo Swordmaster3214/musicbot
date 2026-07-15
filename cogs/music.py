@@ -17,6 +17,7 @@ import sources.youtube as youtube_source
 import sources.spotify as spotify_source
 import sources.direct as direct_source
 from utils.helpers import now_playing_embed, queue_embed
+from i18n.strings import t, SUPPORTED_LANGUAGES
 
 
 class NowPlayingView(discord.ui.View):
@@ -29,66 +30,75 @@ class NowPlayingView(discord.ui.View):
     working if the bot restarts (the view isn't persisted across a
     restart in this version, a future pass could add that with a
     custom_id based persistent view if it's worth the complexity).
+
+    Buttons carry a custom_id that doubles as its translation key, so
+    the labels can be relabeled in __init__ based on the guild's
+    language without touching the decorators themselves.
     """
 
-    def __init__(self, cog: "Music", guild_id: int):
+    def __init__(self, cog: "Music", guild_id: int, lang: str = "en"):
         super().__init__(timeout=None)
         self.cog = cog
         self.guild_id = guild_id
+        self.lang = lang
 
-    @discord.ui.button(label="Rewind 10s", emoji="⏪", style=discord.ButtonStyle.secondary)
+        for item in self.children:
+            if isinstance(item, discord.ui.Button) and item.custom_id:
+                item.label = t(item.custom_id, lang)
+
+    @discord.ui.button(label="Rewind 10s", emoji="⏪", style=discord.ButtonStyle.secondary, custom_id="btn_seek_back")
     async def seek_back(self, interaction: discord.Interaction, button: discord.ui.Button):
         player = self.cog.player_manager.get(self.guild_id)
         await player.seek_seconds(-10)
-        await interaction.response.send_message("Rewound 10 seconds.", ephemeral=True)
+        await interaction.response.send_message(t("seeked_back", self.lang, seconds=10), ephemeral=True)
 
-    @discord.ui.button(label="Pause/Resume", emoji="⏯️", style=discord.ButtonStyle.primary)
+    @discord.ui.button(label="Pause/Resume", emoji="⏯️", style=discord.ButtonStyle.primary, custom_id="btn_pause_resume")
     async def pause_resume(self, interaction: discord.Interaction, button: discord.ui.Button):
         player = self.cog.player_manager.get(self.guild_id)
         if player.voice_client and player.voice_client.is_paused():
             player.resume()
-            await interaction.response.send_message("Resumed.", ephemeral=True)
+            await interaction.response.send_message(t("resumed", self.lang), ephemeral=True)
         else:
             player.pause()
-            await interaction.response.send_message("Paused.", ephemeral=True)
+            await interaction.response.send_message(t("paused", self.lang), ephemeral=True)
 
-    @discord.ui.button(label="Skip forward 10s", emoji="⏩", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label="Skip forward 10s", emoji="⏩", style=discord.ButtonStyle.secondary, custom_id="btn_seek_forward")
     async def seek_forward(self, interaction: discord.Interaction, button: discord.ui.Button):
         player = self.cog.player_manager.get(self.guild_id)
         await player.seek_seconds(10)
-        await interaction.response.send_message("Skipped ahead 10 seconds.", ephemeral=True)
+        await interaction.response.send_message(t("seeked_forward", self.lang, seconds=10), ephemeral=True)
 
-    @discord.ui.button(label="Skip song", emoji="⏭️", style=discord.ButtonStyle.secondary, row=1)
+    @discord.ui.button(label="Skip song", emoji="⏭️", style=discord.ButtonStyle.secondary, row=1, custom_id="btn_skip_song")
     async def skip_song(self, interaction: discord.Interaction, button: discord.ui.Button):
         player = self.cog.player_manager.get(self.guild_id)
         await player.skip()
-        await interaction.response.send_message("Skipped.", ephemeral=True)
+        await interaction.response.send_message(t("skipped", self.lang), ephemeral=True)
 
-    @discord.ui.button(label="Shuffle", emoji="🔀", style=discord.ButtonStyle.secondary, row=1)
+    @discord.ui.button(label="Shuffle", emoji="🔀", style=discord.ButtonStyle.secondary, row=1, custom_id="btn_shuffle")
     async def shuffle(self, interaction: discord.Interaction, button: discord.ui.Button):
         queue = self.cog.queue_manager.get(self.guild_id)
         queue.shuffle()
-        await interaction.response.send_message("Queue shuffled.", ephemeral=True)
+        await interaction.response.send_message(t("queue_shuffled", self.lang), ephemeral=True)
 
-    @discord.ui.button(label="Loop Track", emoji="🔂", style=discord.ButtonStyle.secondary, row=1)
+    @discord.ui.button(label="Loop Track", emoji="🔂", style=discord.ButtonStyle.secondary, row=1, custom_id="btn_loop_track")
     async def loop_toggle(self, interaction: discord.Interaction, button: discord.ui.Button):
         queue = self.cog.queue_manager.get(self.guild_id)
         queue.loop_current = not queue.loop_current
-        state = "enabled" if queue.loop_current else "disabled"
-        await interaction.response.send_message(f"Track loop {state}.", ephemeral=True)
+        state = t("state_enabled", self.lang) if queue.loop_current else t("state_disabled", self.lang)
+        await interaction.response.send_message(t("track_loop_state", self.lang, state=state), ephemeral=True)
 
-    @discord.ui.button(label="Loop Queue", emoji="🔁", style=discord.ButtonStyle.secondary, row=2)
+    @discord.ui.button(label="Loop Queue", emoji="🔁", style=discord.ButtonStyle.secondary, row=2, custom_id="btn_loop_queue")
     async def queue_loop_toggle(self, interaction: discord.Interaction, button: discord.ui.Button):
         queue = self.cog.queue_manager.get(self.guild_id)
         queue.loop_queue = not queue.loop_queue
-        state = "enabled" if queue.loop_queue else "disabled"
-        await interaction.response.send_message(f"Queue loop {state}.", ephemeral=True)
+        state = t("state_enabled", self.lang) if queue.loop_queue else t("state_disabled", self.lang)
+        await interaction.response.send_message(t("queue_loop_state", self.lang, state=state), ephemeral=True)
 
-    @discord.ui.button(label="Stop", emoji="⏹️", style=discord.ButtonStyle.danger, row=2)
+    @discord.ui.button(label="Stop", emoji="⏹️", style=discord.ButtonStyle.danger, row=2, custom_id="btn_stop")
     async def stop_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         player = self.cog.player_manager.get(self.guild_id)
         await player.stop_and_clear()
-        await interaction.response.send_message("Stopped and cleared the queue.", ephemeral=True)
+        await interaction.response.send_message(t("stopped_cleared", self.lang), ephemeral=True)
 
 
 class Music(commands.Cog):
@@ -105,10 +115,16 @@ class Music(commands.Cog):
 
     # ---------- helpers ----------
 
+    def _lang(self, guild_id: int) -> str:
+        """Small wrapper so commands don't have to reach into self.cache directly."""
+        return self.cache.get_guild_language(guild_id)
+
     async def _ensure_voice(self, interaction: discord.Interaction) -> bool:
         """Joins the caller's voice channel if we're not already in one."""
+        lang = self._lang(interaction.guild_id)
+
         if interaction.user.voice is None or interaction.user.voice.channel is None:
-            await interaction.followup.send("You need to be in a voice channel first.")
+            await interaction.followup.send(t("err_not_in_voice", lang))
             return False
 
         guild_id = interaction.guild_id
@@ -136,8 +152,9 @@ class Music(commands.Cog):
         if channel is None:
             return
 
-        embed = now_playing_embed(track)
-        view = NowPlayingView(self, guild_id)
+        lang = self._lang(guild_id)
+        embed = now_playing_embed(track, lang=lang)
+        view = NowPlayingView(self, guild_id, lang=lang)
 
         existing = self.now_playing_messages.get(guild_id)
         if existing is not None:
@@ -187,6 +204,8 @@ class Music(commands.Cog):
     @app_commands.command(name="play", description="Play or queue a song from YouTube, Spotify, or a direct link")
     @app_commands.describe(query="A search term, YouTube link, Spotify link, or direct audio file link")
     async def play(self, interaction: discord.Interaction, query: str):
+        lang = self._lang(interaction.guild_id)
+
         print(f"\n[PLAY] Command invoked by {interaction.user} (Guild ID: {interaction.guild_id})")
         print(f"[PLAY] Query received: '{query}'")
 
@@ -205,38 +224,36 @@ class Music(commands.Cog):
             print(f"[PLAY] Resolution complete. Found {len(tracks)} track(s).")
 
             if not tracks:
-                await interaction.followup.send("No results found for that query.")
+                await interaction.followup.send(t("err_no_results_query", lang))
                 return
 
             if config.MAX_QUEUE_SIZE and len(queue) + len(tracks) > config.MAX_QUEUE_SIZE:
                 print(f"[PLAY] Aborting: Queue size limit reached")
-                await interaction.followup.send(
-                    f"That would exceed the max queue size of {config.MAX_QUEUE_SIZE}."
-                )
+                await interaction.followup.send(t("err_max_queue", lang, max=config.MAX_QUEUE_SIZE))
                 return
 
             print(f"[PLAY] Enqueuing tracks and evaluating cache eligibility...")
             queue.add_many(tracks)
-            for t in tracks:
-                if t.source == "direct" and not direct_source.has_metadata(t):
+            for t_ in tracks:
+                if t_.source == "direct" and not direct_source.has_metadata(t_):
                     continue  # no metadata, requirement says don't cache these
-                self._cache_if_eligible(t)
+                self._cache_if_eligible(t_)
 
             print("[PLAY] Booting playback loop if player is currently idle...")
             await self._start_playback_if_idle(guild_id)
             print("[PLAY] Playback checks finished successfully.")
 
             if len(tracks) == 1:
-                await interaction.followup.send(f"Queued **{tracks[0].title}**.")
+                await interaction.followup.send(t("queued_single", lang, title=tracks[0].title))
             else:
-                await interaction.followup.send(f"Queued **{len(tracks)}** tracks from the playlist.")
+                await interaction.followup.send(t("queued_playlist", lang, count=len(tracks)))
         except Exception as e:
             print(f"\n [CRITICAL ERROR] Exception caught in /play execution chain: {e}")
             import traceback
             traceback.print_exc()
 
             try:
-                await interaction.followup.send(f"An error occurred while processing your request: {e}")
+                await interaction.followup.send(t("err_play_generic", lang, error=e))
             except Exception as followup_err:
                 print(f"[ERROR] Could not send failure followup message: {followup_err}")
 
@@ -258,6 +275,8 @@ class Music(commands.Cog):
     @app_commands.command(name="shuffleplay", description="Play a playlist link with the queue shuffled")
     @app_commands.describe(query="A YouTube or Spotify playlist link")
     async def shuffleplay(self, interaction: discord.Interaction, query: str):
+        lang = self._lang(interaction.guild_id)
+
         print(f"\n[SHUFFLEPLAY] Command invoked by {interaction.user} with query: '{query}'")
         await interaction.response.defer()
 
@@ -273,122 +292,134 @@ class Music(commands.Cog):
             print(f"[SHUFFLEPLAY] Resolved {len(tracks)} tracks.")
 
             if not tracks:
-                await interaction.followup.send("No results found for that playlist.")
+                await interaction.followup.send(t("err_no_results_playlist", lang))
                 return
 
             queue.add_many(tracks)
             queue.shuffle()
             print("[SHUFFLEPLAY] Queue randomized.")
 
-            for t in tracks:
-                if t.source == "direct" and not direct_source.has_metadata(t):
+            for t_ in tracks:
+                if t_.source == "direct" and not direct_source.has_metadata(t_):
                     continue
-                self._cache_if_eligible(t)
+                self._cache_if_eligible(t_)
 
             print("[SHUFFLEPLAY] Triggering player...")
             await self._start_playback_if_idle(guild_id)
-            await interaction.followup.send(f"Queued and shuffled **{len(tracks)}** tracks.")
+            await interaction.followup.send(t("queued_shuffled", lang, count=len(tracks)))
 
         except Exception as e:
             print(f"\n[CRITICAL ERROR] Exception caught in /shuffleplay execution chain: {e}")
             import traceback
             traceback.print_exc()
             try:
-                await interaction.followup.send(f"❌ An error occurred while processing your playlist: {e}")
+                await interaction.followup.send(t("err_shuffleplay_generic", lang, error=e))
             except Exception as followup_err:
                 print(f"[ERROR] Could not send failure followup message: {followup_err}")
 
     @app_commands.command(name="shuffle", description="Shuffle the current queue")
     async def shuffle(self, interaction: discord.Interaction):
+        lang = self._lang(interaction.guild_id)
         queue = self.queue_manager.get(interaction.guild_id)
         queue.shuffle()
-        await interaction.response.send_message("Queue shuffled.")
+        await interaction.response.send_message(t("queue_shuffled", lang))
 
     @app_commands.command(name="queue", description="Show the current queue")
     @app_commands.describe(page="Page number, starting at 1")
     async def show_queue(self, interaction: discord.Interaction, page: int = 1):
+        lang = self._lang(interaction.guild_id)
         queue = self.queue_manager.get(interaction.guild_id)
-        embed = queue_embed(queue.upcoming, page=max(page - 1, 0))
+        embed = queue_embed(queue.upcoming, page=max(page - 1, 0), lang=lang)
         await interaction.response.send_message(embed=embed)
 
     @app_commands.command(name="clearqueue", description="Clear the entire queue")
     async def clear_queue(self, interaction: discord.Interaction):
+        lang = self._lang(interaction.guild_id)
         queue = self.queue_manager.get(interaction.guild_id)
         count = len(queue)
         queue.clear()
-        await interaction.response.send_message(f"Cleared {count} track(s) from the queue.")
+        await interaction.response.send_message(t("queue_cleared", lang, count=count))
 
     @app_commands.command(name="remove", description="Remove a specific track from the queue by its position")
     @app_commands.describe(position="Position in the queue, as shown by /queue")
     async def remove(self, interaction: discord.Interaction, position: int):
+        lang = self._lang(interaction.guild_id)
         queue = self.queue_manager.get(interaction.guild_id)
         track = queue.remove_at(position - 1)
         if track is None:
-            await interaction.response.send_message("Nothing at that position.")
+            await interaction.response.send_message(t("remove_nothing", lang))
         else:
-            await interaction.response.send_message(f"Removed **{track.title}** from the queue.")
+            await interaction.response.send_message(t("removed_track", lang, title=track.title))
 
     # ---------- playback control ----------
 
     @app_commands.command(name="pause", description="Pause playback")
     async def pause(self, interaction: discord.Interaction):
+        lang = self._lang(interaction.guild_id)
         player = self.player_manager.get(interaction.guild_id)
         if player.pause():
-            await interaction.response.send_message("Paused.")
+            await interaction.response.send_message(t("paused", lang))
         else:
-            await interaction.response.send_message("Nothing is playing.")
+            await interaction.response.send_message(t("nothing_playing", lang))
 
     @app_commands.command(name="resume", description="Resume playback")
     async def resume(self, interaction: discord.Interaction):
+        lang = self._lang(interaction.guild_id)
         player = self.player_manager.get(interaction.guild_id)
         if player.resume():
-            await interaction.response.send_message("Resumed.")
+            await interaction.response.send_message(t("resumed", lang))
         else:
-            await interaction.response.send_message("Nothing is paused.")
+            await interaction.response.send_message(t("nothing_paused", lang))
 
     @app_commands.command(name="skip", description="Skip the current song")
     async def skip(self, interaction: discord.Interaction):
+        lang = self._lang(interaction.guild_id)
         player = self.player_manager.get(interaction.guild_id)
         await player.skip()
-        await interaction.response.send_message("Skipped.")
+        await interaction.response.send_message(t("skipped", lang))
 
     @app_commands.command(name="seekforward", description="Jump forward within the current song")
     @app_commands.describe(seconds="How many seconds to jump ahead, defaults to 10")
     async def seek_forward(self, interaction: discord.Interaction, seconds: int = 10):
+        lang = self._lang(interaction.guild_id)
         player = self.player_manager.get(interaction.guild_id)
         await player.seek_seconds(seconds)
-        await interaction.response.send_message(f"Jumped ahead {seconds} seconds.")
+        await interaction.response.send_message(t("seeked_forward", lang, seconds=seconds))
 
     @app_commands.command(name="seekback", description="Jump backward within the current song")
     @app_commands.describe(seconds="How many seconds to rewind, defaults to 10")
     async def seek_back(self, interaction: discord.Interaction, seconds: int = 10):
+        lang = self._lang(interaction.guild_id)
         player = self.player_manager.get(interaction.guild_id)
         await player.seek_seconds(-seconds)
-        await interaction.response.send_message(f"Rewound {seconds} seconds.")
+        await interaction.response.send_message(t("seeked_back", lang, seconds=seconds))
 
     @app_commands.command(name="stop", description="Stop playback and clear the queue")
     async def stop(self, interaction: discord.Interaction):
+        lang = self._lang(interaction.guild_id)
         player = self.player_manager.get(interaction.guild_id)
         await player.stop_and_clear()
-        await interaction.response.send_message("Stopped and cleared the queue.")
+        await interaction.response.send_message(t("stopped_cleared", lang))
 
     @app_commands.command(name="disconnect", description="Disconnect the bot from voice")
     async def disconnect(self, interaction: discord.Interaction):
+        lang = self._lang(interaction.guild_id)
         player = self.player_manager.get(interaction.guild_id)
         await player.disconnect()
         self.queue_manager.reset(interaction.guild_id)
-        await interaction.response.send_message("Disconnected.")
+        await interaction.response.send_message(t("disconnected", lang))
 
     @app_commands.command(name="nowplaying", description="Show the currently playing track")
     async def now_playing(self, interaction: discord.Interaction):
+        lang = self._lang(interaction.guild_id)
         queue = self.queue_manager.get(interaction.guild_id)
         if queue.current is None:
-            await interaction.response.send_message("Nothing is playing right now.")
+            await interaction.response.send_message(t("nothing_playing_now", lang))
             return
 
         guild_id = interaction.guild_id
-        embed = now_playing_embed(queue.current)
-        view = NowPlayingView(self, interaction.guild_id)
+        embed = now_playing_embed(queue.current, lang=lang)
+        view = NowPlayingView(self, interaction.guild_id, lang=lang)
 
         self.now_playing_channels[guild_id] = interaction.channel
 
@@ -409,33 +440,53 @@ class Music(commands.Cog):
 
     @app_commands.command(name="loop", description="Toggle looping the current track")
     async def loop(self, interaction: discord.Interaction):
+        lang = self._lang(interaction.guild_id)
         queue = self.queue_manager.get(interaction.guild_id)
         queue.loop_current = not queue.loop_current
-        state = "enabled" if queue.loop_current else "disabled"
-        await interaction.response.send_message(f"Track loop {state}.")
+        state = t("state_enabled", lang) if queue.loop_current else t("state_disabled", lang)
+        await interaction.response.send_message(t("track_loop_state", lang, state=state))
 
     @app_commands.command(name="loopqueue", description="Toggle looping the entire queue")
     async def loop_queue(self, interaction: discord.Interaction):
+        lang = self._lang(interaction.guild_id)
         queue = self.queue_manager.get(interaction.guild_id)
         queue.loop_queue = not queue.loop_queue
-        state = "enabled" if queue.loop_queue else "disabled"
-        await interaction.response.send_message(f"Queue loop {state}.")
+        state = t("state_enabled", lang) if queue.loop_queue else t("state_disabled", lang)
+        await interaction.response.send_message(t("queue_loop_state", lang, state=state))
 
     # ---------- cache search ----------
 
     @app_commands.command(name="findcached", description="Search previously played songs by title")
     @app_commands.describe(query="Part of a song title to search for")
     async def find_cached(self, interaction: discord.Interaction, query: str):
+        lang = self._lang(interaction.guild_id)
         await interaction.response.defer()
         loop = asyncio.get_event_loop()
         results = await loop.run_in_executor(None, self.cache.fuzzy_search, query, 10)
 
         if not results:
-            await interaction.followup.send("No cached songs matched that search.")
+            await interaction.followup.send(t("no_cached_matches", lang))
             return
 
         lines = [f"**{r.title}**" + (f" — {r.artist}" if r.artist else "") for r in results]
         await interaction.followup.send("\n".join(lines))
+
+    # ---------- settings ----------
+
+    @app_commands.command(name="language", description="Set the bot's response language for this server")
+    @app_commands.describe(language="Language to use for bot responses")
+    @app_commands.choices(language=[
+        app_commands.Choice(name=name, value=code)
+        for code, name in SUPPORTED_LANGUAGES.items()
+    ])
+    async def language(self, interaction: discord.Interaction, language: app_commands.Choice[str]):
+        # this is a per-server setting on purpose, so the whole group
+        # gets a consistent experience instead of every message being
+        # a mix of languages depending on who ran the command
+        self.cache.set_guild_language(interaction.guild_id, language.value)
+        await interaction.response.send_message(
+            t("language_set", language.value, language=language.name)
+        )
 
 
 async def setup(bot: commands.Bot):

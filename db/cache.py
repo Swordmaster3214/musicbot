@@ -6,6 +6,10 @@ This is a straightforward synchronous sqlite3 wrapper. Discord.py runs
 an async event loop, so calls into this get pushed to a thread executor
 from the cog layer rather than making this whole module async for
 what is a pretty small, fast local file.
+
+Also holds the per-guild settings table (currently just language),
+it's the same tiny sqlite file so there's no reason to spin up a
+second store just for one column.
 """
 import sqlite3
 from pathlib import Path
@@ -98,6 +102,24 @@ class SongCache:
             source=row["source"],
             duration_seconds=row["duration_seconds"],
         )
+
+    # ---------- guild settings ----------
+
+    def get_guild_language(self, guild_id: int) -> str:
+        """Returns the guild's chosen language, or 'en' if never set."""
+        row = self.conn.execute(
+            "SELECT language FROM guild_settings WHERE guild_id = ?",
+            (guild_id,),
+        ).fetchone()
+        return row["language"] if row else "en"
+
+    def set_guild_language(self, guild_id: int, language: str):
+        self.conn.execute(
+            """INSERT INTO guild_settings (guild_id, language) VALUES (?, ?)
+               ON CONFLICT(guild_id) DO UPDATE SET language = excluded.language""",
+            (guild_id, language),
+        )
+        self.conn.commit()
 
     def close(self):
         self.conn.close()

@@ -54,6 +54,7 @@ guild-specific sync during testing).
 | `/nowplaying` | Show current track info |
 | `/loop` | Toggle looping current track |
 | `/loopqueue` | Toggle looping the whole queue |
+| `/autoplay` | Toggle autoplay, keeps queuing similar songs once the queue runs dry |
 | `/findcached <query>` | Fuzzy search previously cached song titles |
 | `/language <en\|es>` | Set the bot's response language for this server |
 
@@ -103,7 +104,6 @@ just won't show up in `/findcached`.
 ## Ideas for later (not yet implemented)
 
 - Volume control
-- Autoplay/radio mode (queue similar tracks when the queue runs dry)
 - Per-user favorites/playlists saved across sessions
 - Web dashboard for queue management outside of Discord
 - Additional languages beyond English/Spanish

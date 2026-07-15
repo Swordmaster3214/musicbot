@@ -94,6 +94,13 @@ class NowPlayingView(discord.ui.View):
         state = t("state_enabled", self.lang) if queue.loop_queue else t("state_disabled", self.lang)
         await interaction.response.send_message(t("queue_loop_state", self.lang, state=state), ephemeral=True)
 
+    @discord.ui.button(label="Autoplay", emoji="📻", style=discord.ButtonStyle.secondary, row=2, custom_id="btn_autoplay")
+    async def autoplay_toggle(self, interaction: discord.Interaction, button: discord.ui.Button):
+        queue = self.cog.queue_manager.get(self.guild_id)
+        queue.autoplay = not queue.autoplay
+        state = t("state_enabled", self.lang) if queue.autoplay else t("state_disabled", self.lang)
+        await interaction.response.send_message(t("autoplay_state", self.lang, state=state), ephemeral=True)
+
     @discord.ui.button(label="Stop", emoji="⏹️", style=discord.ButtonStyle.danger, row=2, custom_id="btn_stop")
     async def stop_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         player = self.cog.player_manager.get(self.guild_id)
@@ -453,6 +460,14 @@ class Music(commands.Cog):
         queue.loop_queue = not queue.loop_queue
         state = t("state_enabled", lang) if queue.loop_queue else t("state_disabled", lang)
         await interaction.response.send_message(t("queue_loop_state", lang, state=state))
+
+    @app_commands.command(name="autoplay", description="Toggle autoplay (keeps queuing similar songs when the queue runs dry)")
+    async def autoplay(self, interaction: discord.Interaction):
+        lang = self._lang(interaction.guild_id)
+        queue = self.queue_manager.get(interaction.guild_id)
+        queue.autoplay = not queue.autoplay
+        state = t("state_enabled", lang) if queue.autoplay else t("state_disabled", lang)
+        await interaction.response.send_message(t("autoplay_state", lang, state=state))
 
     # ---------- cache search ----------
 

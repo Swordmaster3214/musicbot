@@ -79,8 +79,12 @@ class GuildPlayer:
         discord.py gives us on VoiceClient.play.
         """
         track = self.queue.next(ignore_loop=ignore_loop)
+
+        if track is None and self.queue.autoplay:
+            track = await self._pull_autoplay_track()
+
         if track is None:
-            return  # queue's empty, just sit connected and idle
+            return  # queue's empty and autoplay is off (or came up dry), just sit idle
 
         source_module = direct_source if track.source == "direct" else youtube_source
         audio_source = await source_module.get_playable_source(track)
@@ -91,6 +95,31 @@ class GuildPlayer:
 
         if self.on_track_start:
             await self.on_track_start(track)
+
+    async def _pull_autoplay_track(self) -> Optional[Track]:
+        """
+        Queue ran dry with autoplay on. Seeds a youtube mix off the last
+        track that actually played and grabs a batch from it, filtering
+        out anything already played this session so we don't loop back
+        onto the same handful of songs. If this batch eventually runs
+        out too, whichever track ends up last in history becomes the
+        seed for the next pull, so the chain just keeps going.
+        """
+        if not self.queue.history:
+            return None  # nothing's ever played, no seed to work from
+
+        seed = self.queue.history[-1]
+        already_played = {t.url for t in self.queue.history}
+        if self.queue.current:
+            already_played.add(self.queue.current.url)
+
+        mix_tracks = await youtube_source.get_mix_tracks(seed.url, already_played)
+        if not mix_tracks:
+            print(f"[autoplay] mix came back empty for seed '{seed.title}', giving up for now")
+            return None
+
+        self.queue.add_many(mix_tracks)
+        return self.queue.next()
 
     def _make_after_callback(self):
         """

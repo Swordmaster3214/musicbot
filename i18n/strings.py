@@ -44,6 +44,7 @@ STRINGS = {
         "queue_loop_state": "Queue loop {state}.",
         "state_enabled": "enabled",
         "state_disabled": "disabled",
+        "autoplay_state":  "Autoplay {state}.",
 
         # cache search
         "no_cached_matches": "No cached songs matched that search.",
@@ -71,6 +72,7 @@ STRINGS = {
         "btn_loop_track": "Loop Track",
         "btn_loop_queue": "Loop Queue",
         "btn_stop": "Stop",
+        "btn_autoplay": "Autoplay",
     },
     "es": {
         # errors / validation
@@ -107,6 +109,7 @@ STRINGS = {
         "queue_loop_state": "Bucle de cola {state}.",
         "state_enabled": "activado",
         "state_disabled": "desactivado",
+        "autoplay_state": "Reproducción automática {state}."
 
         # cache search
         "no_cached_matches": "Ninguna canción en caché coincide con esa búsqueda.",
@@ -134,6 +137,7 @@ STRINGS = {
         "btn_loop_track": "Repetir canción",
         "btn_loop_queue": "Repetir cola",
         "btn_stop": "Detener",
+        "btn_autoplay": "Reproducción automática",
     },
 }
 

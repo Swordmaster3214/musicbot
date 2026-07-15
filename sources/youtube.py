@@ -197,3 +197,59 @@ def get_playable_source_from_cache(track: Track, start_seconds: float = 0):
     /seekback fast instead of hitting youtube on every nudge.
     """
     return _build_ffmpeg_source(track.stream_url, start_seconds)
+
+import re
+
+YOUTUBE_ID_RE = re.compile(r"(?:v=|youtu\.be/|embed/|shorts/)([a-zA-Z0-9_-]{11})")
+
+
+def extract_video_id(url: str) -> Optional[str]:
+    """Pulls the 11 char video id out of a youtube url, whatever shape it's in."""
+    match = YOUTUBE_ID_RE.search(url)
+    return match.group(1) if match else None
+
+
+async def get_mix_tracks(seed_url: str, exclude_urls: set[str]) -> list[Track]:
+    """
+    Builds youtube's auto-generated 'Mix' playlist for a video and does
+    a flat listing pass on it, same as any other playlist. There's no
+    dedicated related-videos api anymore, but a mix playlist is really
+    just youtube's recommendation engine wearing a playlist url, so
+    yt-dlp handles it the same way it handles any other playlist link.
+
+    exclude_urls filters out anything we've already played this
+    session, since mixes reliably include the seed track itself and
+    sometimes earlier tracks from the session too.
+    """
+    video_id = extract_video_id(seed_url)
+    if not video_id:
+        print(f"[autoplay] couldn't pull a video id out of seed url: {seed_url}")
+        return []
+
+    mix_url = f"https://www.youtube.com/watch?v={video_id}&list=RD{video_id}"
+    loop = asyncio.get_event_loop()
+
+    try:
+        entries = await loop.run_in_executor(None, _extract, mix_url, False, True)
+    except Exception as e:
+        print(f"[autoplay] mix extraction failed for seed '{seed_url}': {e}")
+        return []
+
+    tracks = []
+    for entry in entries:
+        webpage_url = entry.get("webpage_url") or entry.get("url")
+        if not webpage_url or webpage_url in exclude_urls:
+            continue
+
+        tracks.append(
+            Track(
+                title=entry.get("title", "Unknown title"),
+                url=webpage_url,
+                stream_url=None,
+                duration_seconds=entry.get("duration"),
+                artist=entry.get("uploader") or entry.get("channel"),
+                thumbnail=_thumbnail_from_entry(entry),
+                source="youtube",
+            )
+        )
+    return tracks

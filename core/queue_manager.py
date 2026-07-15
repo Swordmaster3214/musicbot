@@ -17,6 +17,7 @@ class GuildQueue:
     current: Optional[Track] = None
     loop_current: bool = False
     loop_queue: bool = False
+    autoplay: bool = False
 
     def add(self, track: Track):
         self.upcoming.append(track)
@@ -104,5 +105,6 @@ class QueueManager:
             queue.current = None
             queue.loop_current = False
             queue.loop_queue = False
+            queue.autoplay = False
         else:
             self._queues[guild_id] = GuildQueue()

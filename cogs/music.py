@@ -147,6 +147,17 @@ class Music(commands.Cog):
             except discord.NotFound:
                 # message got deleted out from under us, just send a new one
                 pass
+            except discord.HTTPException as e:
+                # covers the interaction webhook token expiring (401,
+                # code 50027) on a message that was originally created
+                # via interaction.original_response() in /nowplaying.
+                # that object edits through the interaction's webhook,
+                # which only lives about 15 minutes, so a long enough
+                # session eventually hits this. just fall through and
+                # send a fresh plain message instead of crashing playback
+                if e.code != 50027:
+                    raise
+                print(f"[music] stale interaction webhook for guild {guild_id}, reposting now playing message")
 
         message = await channel.send(embed=embed, view=view)
         self.now_playing_messages[guild_id] = message
@@ -383,6 +394,16 @@ class Music(commands.Cog):
 
         await interaction.response.send_message(embed=embed, view=view)
         message = await interaction.original_response()
+
+        # interaction.original_response() hands back an InteractionMessage,
+        # and editing that goes through the interaction's own webhook
+        # instead of a normal channel message edit. that webhook token
+        # only lasts about 15 minutes, so if we hang onto this object and
+        # edit it later from _on_track_start, it works fine for a while
+        # and then starts throwing 401 Invalid Webhook Token once the
+        # token expires. re-fetching it as a plain channel message here
+        # detaches it from the interaction so it can be edited indefinitely.
+        message = await interaction.channel.fetch_message(message.id)
 
         self.now_playing_messages[guild_id] = message
 

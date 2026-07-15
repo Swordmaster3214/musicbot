@@ -44,7 +44,7 @@ STRINGS = {
         "queue_loop_state": "Queue loop {state}.",
         "state_enabled": "enabled",
         "state_disabled": "disabled",
-        "autoplay_state":  "Autoplay {state}.",
+        "autoplay_state":  "Autoplay (24/7) mode {state}.",
 
         # cache search
         "no_cached_matches": "No cached songs matched that search.",
@@ -109,7 +109,7 @@ STRINGS = {
         "queue_loop_state": "Bucle de cola {state}.",
         "state_enabled": "activado",
         "state_disabled": "desactivado",
-        "autoplay_state": "Reproducción automática {state}.",
+        "autoplay_state": "Modo de reproducción automática (24/7) {state}.",
 
         # cache search
         "no_cached_matches": "Ninguna canción en caché coincide con esa búsqueda.",

@@ -99,7 +99,7 @@ class NowPlayingView(discord.ui.View):
         queue = self.cog.queue_manager.get(self.guild_id)
         queue.autoplay = not queue.autoplay
         state = t("state_enabled", self.lang) if queue.autoplay else t("state_disabled", self.lang)
-        await interaction.response.send_message(t("autoplay_state", self.lang, state=state), ephemeral=True)
+        await interaction.response.send_message(t("autoplay_state", self.lang, state=state))
 
     @discord.ui.button(label="Stop", emoji="⏹️", style=discord.ButtonStyle.danger, row=2, custom_id="btn_stop")
     async def stop_button(self, interaction: discord.Interaction, button: discord.ui.Button):

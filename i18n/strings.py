@@ -109,7 +109,7 @@ STRINGS = {
         "queue_loop_state": "Bucle de cola {state}.",
         "state_enabled": "activado",
         "state_disabled": "desactivado",
-        "autoplay_state": "Reproducción automática {state}."
+        "autoplay_state": "Reproducción automática {state}.",
 
         # cache search
         "no_cached_matches": "Ninguna canción en caché coincide con esa búsqueda.",

@@ -78,6 +78,7 @@ class NowPlayingView(discord.ui.View):
     async def shuffle(self, interaction: discord.Interaction, button: discord.ui.Button):
         queue = self.cog.queue_manager.get(self.guild_id)
         queue.shuffle()
+        self.cog.player_manager.get(self.guild_id).schedule_prewarm()
         await interaction.response.send_message(t("queue_shuffled_by", self.lang, user=interaction.user.display_name))
 
     @discord.ui.button(label="Loop Track", emoji="🔂", style=discord.ButtonStyle.secondary, row=1, custom_id="btn_loop_track")
@@ -203,7 +204,11 @@ class Music(commands.Cog):
 
     async def _start_playback_if_idle(self, guild_id: int):
         player = self.player_manager.get(guild_id)
-        if player.voice_client and not player.voice_client.is_playing() and not player.voice_client.is_paused():
+        if player.voice_client and (player.voice_client.is_playing() or player.voice_client.is_paused()):
+            # The player is busy, meaning songs were added mid-track.
+            # Trigger a prewarm evaluation for the new track(s).
+            player.schedule_prewarm()
+        else:
             await player.play_next()
 
     # ---------- play / queue commands ----------
@@ -329,6 +334,7 @@ class Music(commands.Cog):
         lang = self._lang(interaction.guild_id)
         queue = self.queue_manager.get(interaction.guild_id)
         queue.shuffle()
+        self.player_manager.get(interaction.guild_id).schedule_prewarm()
         await interaction.response.send_message(t("queue_shuffled", lang))
 
     @app_commands.command(name="queue", description="Show the current queue")
@@ -345,6 +351,7 @@ class Music(commands.Cog):
         queue = self.queue_manager.get(interaction.guild_id)
         count = len(queue)
         queue.clear()
+        self.player_manager.get(interaction.guild_id).schedule_prewarm()
         await interaction.response.send_message(t("queue_cleared", lang, count=count))
 
     @app_commands.command(name="remove", description="Remove a specific track from the queue by its position")
@@ -356,6 +363,7 @@ class Music(commands.Cog):
         if track is None:
             await interaction.response.send_message(t("remove_nothing", lang))
         else:
+            self.player_manager.get(interaction.guild_id).schedule_prewarm()
             await interaction.response.send_message(t("removed_track", lang, title=track.title))
 
     # ---------- playback control ----------

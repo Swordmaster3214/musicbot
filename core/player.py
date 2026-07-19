@@ -51,6 +51,13 @@ class GuildPlayer:
         # playing anyway a few seconds later once the lookup finishes.
         self._resolve_task: Optional[asyncio.Task] = None
 
+        # holds the background prewarm lookup for whatever track is
+        # sitting next in the queue, so it can be cancelled if the
+        # queue changes out from under it (skip, remove, shuffle)
+        # before that lookup finishes.
+        self._prewarm_task: Optional[asyncio.Task] = None
+        self._prewarm_track: Optional[Track] = None
+
         # playback position tracking, used for seeking. accum holds
         # seconds already played before the current segment, segment_start
         # is the wall clock time the current segment began. no segment
@@ -115,6 +122,10 @@ class GuildPlayer:
                 if track is None:
                     return  # queue's empty and autoplay is off (or came up dry), just sit idle
 
+                # if the prewarm step already resolved this exact track,
+                # get_playable_source below will see stream_url set and
+                # skip straight to building the ffmpeg source instead of
+                # doing the lookup all over again
                 source_module = direct_source if track.source == "direct" else youtube_source
                 self._resolve_task = asyncio.ensure_future(source_module.get_playable_source(track))
                 audio_source = await self._resolve_task
@@ -128,9 +139,54 @@ class GuildPlayer:
             self.voice_client.play(audio_source, after=self._make_after_callback())
             self._position_accum = 0.0
             self._segment_start = time.time()
+            self.schedule_prewarm()
 
         if self.on_track_start:
             await self.on_track_start(track)
+
+    def schedule_prewarm(self):
+        """
+        Schedules stream resolution for the next track in the queue.
+        Safe to call at any time (e.g., when new items are added mid-song).
+        Identifies if the target track is already being prewarmed to avoid
+        pointlessly cancelling and restarting active background tasks.
+        """
+        # If the queue is empty, ensure any running prewarm task is cleaned up
+        if not self.queue.upcoming:
+            if self._prewarm_task is not None and not self._prewarm_task.done():
+                self._prewarm_task.cancel()
+            self._prewarm_track = None
+            return
+
+        next_track = self.queue.upcoming[0]
+
+        # Direct links and already resolved tracks don't need prewarming
+        if next_track.source == "direct" or next_track.stream_url:
+            if self._prewarm_task is not None and not self._prewarm_task.done():
+                self._prewarm_task.cancel()
+            self._prewarm_track = None
+            return
+
+        # If a prewarm task is active...
+        if self._prewarm_task is not None and not self._prewarm_task.done():
+            # If it's already working on this exact track, let it keep running!
+            if self._prewarm_track == next_track:
+                return
+            # Otherwise, the track at the top of the queue changed, so cancel the stale task
+            self._prewarm_task.cancel()
+
+        self._prewarm_track = next_track
+        self._prewarm_task = asyncio.ensure_future(self._prewarm(next_track))
+
+    async def _prewarm(self, track: Track):
+        try:
+            await youtube_source.resolve_stream(track)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            # not fatal, play_next just resolves it the normal way when
+            # this track's turn actually comes up
+            print(f"[player] prewarm failed for '{track.title}': {e}")
 
     async def _pull_autoplay_track(self) -> Optional[Track]:
         """
@@ -215,10 +271,14 @@ class GuildPlayer:
 
         Also cancels any resolution work play_next might currently be
         doing in the background (a yt-dlp stream lookup, an autoplay
-        mix pull). Without this, stop only stops what's audibly
-        playing right now, and a track that was mid-lookup when stop
-        was pressed just starts playing on its own a moment later once
-        that lookup finishes, even though the queue is supposedly empty.
+        mix pull), plus any prewarm lookup running ahead for the next
+        track. Without cancelling the resolve task, stop only stops
+        what's audibly playing right now, and a track that was mid-
+        lookup when stop was pressed just starts playing on its own a
+        moment later once that lookup finishes, even though the queue
+        is supposedly empty. The prewarm task is lower stakes since it
+        never starts playback on its own, but no reason to let it keep
+        burning a yt-dlp round trip against a queue that just got wiped.
         """
         self._force_ignore_loop = True
         self.queue.loop_current = False
@@ -226,6 +286,9 @@ class GuildPlayer:
 
         if self._resolve_task is not None and not self._resolve_task.done():
             self._resolve_task.cancel()
+
+        if self._prewarm_task is not None and not self._prewarm_task.done():
+            self._prewarm_task.cancel()
 
         if self.voice_client and (self.voice_client.is_playing() or self.voice_client.is_paused()):
             self.voice_client.stop()

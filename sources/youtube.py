@@ -35,12 +35,6 @@ class Track:
     artist: Optional[str] = None
     source: str = "youtube"
     thumbnail: Optional[str] = None
-    # headers the resolved stream url needs to actually be accepted by
-    # googlevideo. mweb/web formats check these against what the PO
-    # token was generated for, a bare url without them gets a 403 even
-    # though the url and token are both valid. only set for youtube
-    # tracks, direct links don't need this.
-    stream_headers: Optional[dict] = None
 
 
 def _extract(query: str, is_search: bool, flat: bool = False) -> list[dict]:
@@ -127,7 +121,8 @@ async def search_or_resolve(query: str) -> list[Track]:
     This only does a flat listing pass here, it grabs title/duration/
     uploader for every entry but doesn't resolve an actual playable
     stream for any of them yet. That part happens in
-    get_playable_source, right before a track actually plays.
+    get_playable_source, right before a track actually plays (or
+    earlier still, if the player's prewarm step gets to it first).
 
     We used to resolve a real stream for every single entry up front,
     which meant a 60 track playlist went through the full PO token/JS
@@ -157,9 +152,10 @@ async def search_or_resolve(query: str) -> list[Track]:
             Track(
                 title=entry.get("title", "Unknown title"),
                 url=webpage_url,
-                # left empty on purpose, get_playable_source resolves a
-                # fresh stream right before playback anyway so doing it
-                # here too would just be the same work twice
+                # left empty on purpose, resolution happens later,
+                # either by the prewarm step or by get_playable_source
+                # right before playback, so doing it here too would
+                # just be the same work twice
                 stream_url=None,
                 duration_seconds=entry.get("duration"),
                 artist=entry.get("uploader") or entry.get("channel"),
@@ -169,52 +165,52 @@ async def search_or_resolve(query: str) -> list[Track]:
     return tracks
 
 
-def _headers_to_ffmpeg_arg(headers: dict) -> str:
-    """
-    Turns a requests-style header dict into the single quoted -headers
-    argument ffmpeg wants, each header terminated with a literal
-    CRLF. Without this, mweb/web stream urls come back with a valid
-    PO token and still get a 403 from googlevideo, since those clients
-    check the request headers (User-Agent especially) against what the
-    token was minted for. android/ios don't seem to care as much,
-    which is why this only bit us after narrowing the client list
-    down to just mweb.
-    """
-    header_lines = "".join(f"{key}: {value}\r\n" for key, value in headers.items())
-    return f'-headers "{header_lines}"'
-
-
-def _build_ffmpeg_source(stream_url: str, start_seconds: float = 0, headers: Optional[dict] = None):
+def _build_ffmpeg_source(stream_url: str, start_seconds: float = 0):
     import discord
 
     before_options = FFMPEG_OPTS["before_options"]
-    if headers:
-        before_options = f"{before_options} {_headers_to_ffmpeg_arg(headers)}"
     if start_seconds > 0:
         before_options = f"-ss {start_seconds} {before_options}"
 
     opts = {"before_options": before_options, "options": FFMPEG_OPTS["options"]}
     return discord.FFmpegPCMAudio(stream_url, **opts)
 
-async def get_playable_source(track: Track, start_seconds: float = 0):
-    """Refreshes the stream url right before playback."""
-    import discord
 
-    print(f"[PLAYER] Refreshing stream URL for playback: '{track.title}'")
+async def resolve_stream(track: Track) -> None:
+    """
+    Resolves a fresh stream url for a track and stores it right on the
+    track object, without building an ffmpeg source out of it. This is
+    the part that actually costs time (PO token generation, JS
+    challenge solving, m3u8 fetching), split out on its own so it can
+    be run ahead of time by the player's prewarm step instead of only
+    ever running right as a track is about to play.
+
+    Callers that already have a resolved stream_url on hand (a loop
+    replaying the same track, or a prewarm that got there first) can
+    skip calling this entirely, that's what get_playable_source checks
+    for below.
+    """
+    print(f"[PLAYER] Resolving stream URL for: '{track.title}'")
     loop = asyncio.get_event_loop()
     entries = await loop.run_in_executor(None, _extract, track.url, False)
     if not entries:
-        raise RuntimeError(f"Could not re-resolve stream for '{track.title}'")
+        raise RuntimeError(f"Could not resolve stream for '{track.title}'")
 
-    resolved = entries[0]
-    fresh_stream_url = resolved["url"]
-    headers = resolved.get("http_headers")
-    print(f"[PLAYER] Resolved headers: {headers}")
+    track.stream_url = entries[0]["url"]
 
-    track.stream_url = fresh_stream_url
-    track.stream_headers = headers
 
-    return _build_ffmpeg_source(fresh_stream_url, start_seconds, headers)
+async def get_playable_source(track: Track, start_seconds: float = 0):
+    """
+    Builds a playable ffmpeg source for a track. If the track already
+    has a stream url on it (set ahead of time by the player's prewarm
+    step, or left over from a previous loop_current playthrough) this
+    skips straight to building the source instead of resolving all
+    over again.
+    """
+    if not track.stream_url:
+        await resolve_stream(track)
+    return _build_ffmpeg_source(track.stream_url, start_seconds)
+
 
 def get_playable_source_from_cache(track: Track, start_seconds: float = 0):
     """
@@ -223,11 +219,8 @@ def get_playable_source_from_cache(track: Track, start_seconds: float = 0):
     seeking, since the url was just refreshed moments ago and doesn't
     need to be looked up again. This is what keeps /seekforward and
     /seekback fast instead of hitting youtube on every nudge.
-
-    Reuses the headers captured alongside that url for the same reason,
-    a fresh url with no headers would just get another 403.
     """
-    return _build_ffmpeg_source(track.stream_url, start_seconds, track.stream_headers)
+    return _build_ffmpeg_source(track.stream_url, start_seconds)
 
 import re
 

@@ -50,62 +50,62 @@ class NowPlayingView(discord.ui.View):
     async def seek_back(self, interaction: discord.Interaction, button: discord.ui.Button):
         player = self.cog.player_manager.get(self.guild_id)
         await player.seek_seconds(-10)
-        await interaction.response.send_message(t("seeked_back", self.lang, seconds=10))
+        await interaction.response.send_message(t("seeked_back_by", self.lang, seconds=10, user=interaction.user.display_name))
 
     @discord.ui.button(label="Pause/Resume", emoji="⏯️", style=discord.ButtonStyle.primary, custom_id="btn_pause_resume")
     async def pause_resume(self, interaction: discord.Interaction, button: discord.ui.Button):
         player = self.cog.player_manager.get(self.guild_id)
         if player.voice_client and player.voice_client.is_paused():
             player.resume()
-            await interaction.response.send_message(t("resumed", self.lang))
+            await interaction.response.send_message(t("resumed_by", self.lang, user=interaction.user.display_name))
         else:
             player.pause()
-            await interaction.response.send_message(t("paused", self.lang))
+            await interaction.response.send_message(t("paused_by", self.lang, user=interaction.user.display_name))
 
     @discord.ui.button(label="Skip forward 10s", emoji="⏩", style=discord.ButtonStyle.secondary, custom_id="btn_seek_forward")
     async def seek_forward(self, interaction: discord.Interaction, button: discord.ui.Button):
         player = self.cog.player_manager.get(self.guild_id)
         await player.seek_seconds(10)
-        await interaction.response.send_message(t("seeked_forward", self.lang, seconds=10))
+        await interaction.response.send_message(t("seeked_forward_by", self.lang, seconds=10, user=interaction.user.display_name))
 
     @discord.ui.button(label="Skip song", emoji="⏭️", style=discord.ButtonStyle.secondary, row=1, custom_id="btn_skip_song")
     async def skip_song(self, interaction: discord.Interaction, button: discord.ui.Button):
         player = self.cog.player_manager.get(self.guild_id)
         await player.skip()
-        await interaction.response.send_message(t("skipped", self.lang))
+        await interaction.response.send_message(t("skipped_by", self.lang, user=interaction.user.display_name))
 
     @discord.ui.button(label="Shuffle", emoji="🔀", style=discord.ButtonStyle.secondary, row=1, custom_id="btn_shuffle")
     async def shuffle(self, interaction: discord.Interaction, button: discord.ui.Button):
         queue = self.cog.queue_manager.get(self.guild_id)
         queue.shuffle()
-        await interaction.response.send_message(t("queue_shuffled", self.lang))
+        await interaction.response.send_message(t("queue_shuffled_by", self.lang, user=interaction.user.display_name))
 
     @discord.ui.button(label="Loop Track", emoji="🔂", style=discord.ButtonStyle.secondary, row=1, custom_id="btn_loop_track")
     async def loop_toggle(self, interaction: discord.Interaction, button: discord.ui.Button):
         queue = self.cog.queue_manager.get(self.guild_id)
         queue.loop_current = not queue.loop_current
         state = t("state_enabled", self.lang) if queue.loop_current else t("state_disabled", self.lang)
-        await interaction.response.send_message(t("track_loop_state", self.lang, state=state))
+        await interaction.response.send_message(t("track_loop_state_by", self.lang, state=state, user=interaction.user.display_name))
 
     @discord.ui.button(label="Loop Queue", emoji="🔁", style=discord.ButtonStyle.secondary, row=2, custom_id="btn_loop_queue")
     async def queue_loop_toggle(self, interaction: discord.Interaction, button: discord.ui.Button):
         queue = self.cog.queue_manager.get(self.guild_id)
         queue.loop_queue = not queue.loop_queue
         state = t("state_enabled", self.lang) if queue.loop_queue else t("state_disabled", self.lang)
-        await interaction.response.send_message(t("queue_loop_state", self.lang, state=state))
+        await interaction.response.send_message(t("queue_loop_state_by", self.lang, state=state, user=interaction.user.display_name))
 
     @discord.ui.button(label="Autoplay", emoji="📻", style=discord.ButtonStyle.secondary, row=2, custom_id="btn_autoplay")
     async def autoplay_toggle(self, interaction: discord.Interaction, button: discord.ui.Button):
         queue = self.cog.queue_manager.get(self.guild_id)
         queue.autoplay = not queue.autoplay
         state = t("state_enabled", self.lang) if queue.autoplay else t("state_disabled", self.lang)
-        await interaction.response.send_message(t("autoplay_state", self.lang, state=state))
+        await interaction.response.send_message(t("autoplay_state_by", self.lang, state=state, user=interaction.user.display_name))
 
     @discord.ui.button(label="Stop", emoji="⏹️", style=discord.ButtonStyle.danger, row=2, custom_id="btn_stop")
     async def stop_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         player = self.cog.player_manager.get(self.guild_id)
         await player.stop_and_clear()
-        await interaction.response.send_message(t("stopped_cleared", self.lang))
+        await interaction.response.send_message(t("stopped_cleared_by", self.lang, user=interaction.user.display_name))
 
 
 class Music(commands.Cog):

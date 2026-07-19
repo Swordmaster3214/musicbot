@@ -73,6 +73,18 @@ STRINGS = {
         "btn_loop_queue": "Loop Queue",
         "btn_stop": "Stop",
         "btn_autoplay": "Autoplay",
+
+        # button-triggered variants
+        "seeked_back_by": "{user} rewound {seconds} seconds.",
+        "resumed_by": "{user} resumed playback.",
+        "paused_by": "{user} paused playback.",
+        "seeked_forward_by": "{user} jumped ahead {seconds} seconds.",
+        "skipped_by": "{user} skipped the song.",
+        "queue_shuffled_by": "{user} shuffled the queue.",
+        "track_loop_state_by": "{user} turned track loop {state}.",
+        "queue_loop_state_by": "{user} turned queue loop {state}.",
+        "autoplay_state_by": "{user} turned autoplay (24/7) mode {state}.",
+        "stopped_cleared_by": "{user} stopped playback and cleared the queue.",
     },
     "es": {
         # errors / validation
@@ -138,6 +150,17 @@ STRINGS = {
         "btn_loop_queue": "Repetir cola",
         "btn_stop": "Detener",
         "btn_autoplay": "Reproducción automática",
+
+        "seeked_back_by": "{user} retrocedió {seconds} segundos.",
+        "resumed_by": "{user} reanudó la reproducción.",
+        "paused_by": "{user} pausó la reproducción.",
+        "seeked_forward_by": "{user} avanzó {seconds} segundos.",
+        "skipped_by": "{user} saltó la canción.",
+        "queue_shuffled_by": "{user} mezcló la cola.",
+        "track_loop_state_by": "{user} puso el bucle de canción en {state}.",
+        "queue_loop_state_by": "{user} puso el bucle de cola en {state}.",
+        "autoplay_state_by": "{user} puso el modo de reproducción automática (24/7) en {state}.",
+        "stopped_cleared_by": "{user} detuvo la reproducción y vació la cola.",
     },
 }
 

@@ -26,6 +26,32 @@ FFMPEG_OPTS = {
     "options": "-vn",
 }
 
+# phrases yt-dlp uses in its DownloadError message when a video is
+# age gated and youtube wants a signed-in, age-verified account to
+# view it. we don't have that (and don't want to start cookie-auth'ing
+# as someone's personal account just to play music), so we catch this
+# specifically and surface it as its own error instead of letting it
+# look like a plain "couldn't find anything" search failure
+AGE_RESTRICTION_MARKERS = (
+    "confirm your age",
+    "age-restricted",
+    "sign in to confirm your age",
+)
+
+
+class AgeRestrictedError(Exception):
+    """
+    Raised when yt-dlp can't pull a video because youtube is gating it
+    behind an age-verified, signed-in account. We have no login to
+    hand it, so this case can never resolve on its own and shouldn't
+    be treated as a generic extraction failure.
+    """
+
+    def __init__(self, query: str):
+        self.query = query
+        super().__init__(f"Age-restricted video, needs sign-in: {query}")
+
+
 @dataclass
 class Track:
     title: str
@@ -35,6 +61,11 @@ class Track:
     artist: Optional[str] = None
     source: str = "youtube"
     thumbnail: Optional[str] = None
+
+
+def _is_age_restriction_error(error_text: str) -> bool:
+    lowered = error_text.lower()
+    return any(marker in lowered for marker in AGE_RESTRICTION_MARKERS)
 
 
 def _extract(query: str, is_search: bool, flat: bool = False) -> list[dict]:
@@ -69,13 +100,22 @@ def _extract(query: str, is_search: bool, flat: bool = False) -> list[dict]:
             return [info]
 
     except yt_dlp.utils.DownloadError as e:
+        err_str = str(e)
+
+        # age gate isn't something a retry or a looser format selector
+        # is ever going to fix, so check for it first and bail out with
+        # a distinct error before we waste time on the format fallback below
+        if _is_age_restriction_error(err_str):
+            print(f"  [YT-DLP] Age-restricted video detected for '{query}', no sign-in available to bypass it.")
+            raise AgeRestrictedError(query) from e
+
         # Format unavailability slips through even with the client
         # fallback list above sometimes, since YouTube's rollout isn't
         # all-or-nothing. One more attempt with the loosest possible
         # selector before giving up, better to hand back something
         # playable (even if it's not audio-only) than to fail the
         # whole /play command over a format quirk.
-        if "Requested format is not available" in str(e):
+        if "Requested format is not available" in err_str:
             print(f"  [YT-DLP] Format fallback triggered for '{query}', retrying with format='best'...")
             fallback_opts = dict(opts)
             fallback_opts["format"] = "best"
@@ -88,6 +128,13 @@ def _extract(query: str, is_search: bool, flat: bool = False) -> list[dict]:
                     if "entries" in info:
                         return [e for e in info["entries"] if e]
                     return [info]
+            except yt_dlp.utils.DownloadError as retry_err:
+                retry_err_str = str(retry_err)
+                if _is_age_restriction_error(retry_err_str):
+                    print(f"  [YT-DLP] Age-restricted video detected for '{query}' during format fallback.")
+                    raise AgeRestrictedError(query) from retry_err
+                print(f"  [YT-DLP CRITICAL] Fallback extraction also failed for '{query}': {retry_err}")
+                raise
             except Exception as retry_err:
                 print(f"  [YT-DLP CRITICAL] Fallback extraction also failed for '{query}': {retry_err}")
                 raise
@@ -130,6 +177,11 @@ async def search_or_resolve(query: str) -> list[Track]:
     it all again for each song once it actually got played. Now that
     expensive part only happens once, right when a given track is
     about to start, instead of twice for everything in the queue.
+
+    AgeRestrictedError is let through on purpose instead of being
+    swallowed into an empty list, callers need to know this specific
+    failure mode so they can tell the user what actually happened
+    instead of showing a generic "no results" message.
     """
     is_search = not (query.startswith("http://") or query.startswith("https://"))
     loop = asyncio.get_event_loop()
@@ -137,6 +189,8 @@ async def search_or_resolve(query: str) -> list[Track]:
     print(f"[RESOLVER] Handing query off to thread pool executor...")
     try:
         entries = await loop.run_in_executor(None, _extract, query, is_search, True)
+    except AgeRestrictedError:
+        raise
     except Exception as e:
         print(f"[RESOLVER] Extraction failed entirely for '{query}': {e}")
         return []

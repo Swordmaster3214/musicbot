@@ -17,6 +17,7 @@ STRINGS = {
         "err_max_queue": "That would exceed the max queue size of {max}.",
         "err_play_generic": "An error occurred while processing your request: {error}",
         "err_shuffleplay_generic": "❌ An error occurred while processing your playlist: {error}",
+        "err_age_restricted": "That video is age-restricted and YouTube requires a signed-in, age-verified account to view it. The bot can't play it. Try a different link or search term.",
 
         # queueing
         "queued_single": "Queued **{title}**.",
@@ -94,6 +95,7 @@ STRINGS = {
         "err_max_queue": "Eso superaría el tamaño máximo de la cola ({max}).",
         "err_play_generic": "Ocurrió un error al procesar tu solicitud: {error}",
         "err_shuffleplay_generic": "❌ Ocurrió un error al procesar tu lista: {error}",
+        "err_age_restricted": "Ese video tiene restricción de edad y YouTube exige una cuenta con la edad verificada e iniciada sesión para verlo. El bot no puede reproducirlo. Prueba con otro enlace o término de búsqueda.",
 
         # queueing
         "queued_single": "Se añadió **{title}** a la cola.",

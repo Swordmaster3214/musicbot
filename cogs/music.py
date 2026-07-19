@@ -259,6 +259,13 @@ class Music(commands.Cog):
                 await interaction.followup.send(t("queued_single", lang, title=tracks[0].title))
             else:
                 await interaction.followup.send(t("queued_playlist", lang, count=len(tracks)))
+        except youtube_source.AgeRestrictedError:
+            # this one gets its own message instead of falling into the
+            # generic handler below, since "no results" is misleading
+            # when we actually found the video and just can't play it
+            # without a signed-in, age-verified account
+            print(f"[PLAY] Age-restricted video blocked the request for query: '{query}'")
+            await interaction.followup.send(t("err_age_restricted", lang))
         except Exception as e:
             print(f"\n [CRITICAL ERROR] Exception caught in /play execution chain: {e}")
             import traceback
@@ -320,6 +327,9 @@ class Music(commands.Cog):
             await self._start_playback_if_idle(guild_id)
             await interaction.followup.send(t("queued_shuffled", lang, count=len(tracks)))
 
+        except youtube_source.AgeRestrictedError:
+            print(f"[SHUFFLEPLAY] Age-restricted video blocked the request for query: '{query}'")
+            await interaction.followup.send(t("err_age_restricted", lang))
         except Exception as e:
             print(f"\n[CRITICAL ERROR] Exception caught in /shuffleplay execution chain: {e}")
             import traceback
@@ -505,7 +515,7 @@ class Music(commands.Cog):
     async def language(self, interaction: discord.Interaction, language: app_commands.Choice[str]):
         # this is a per-server setting on purpose, so the whole group
         # gets a consistent experience instead of every message being
-        # a mix of languages depending on who ran the command
+        # a mix of languages depending on who ran the command last
         self.cache.set_guild_language(interaction.guild_id, language.value)
         await interaction.response.send_message(
             t("language_set", language.value, language=language.name)

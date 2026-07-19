@@ -61,6 +61,12 @@ class Track:
     artist: Optional[str] = None
     source: str = "youtube"
     thumbnail: Optional[str] = None
+    # discord user id of whoever queued this track. left as None for
+    # tracks the bot pulled in on its own (autoplay mixes), and gets
+    # stamped on everything else by the cog right after a query
+    # resolves, no matter which source module built the track. this is
+    # what lets someone skip/pause/seek their own song without a vote.
+    requested_by: Optional[int] = None
 
 
 def _is_age_restriction_error(error_text: str) -> bool:
@@ -298,6 +304,10 @@ async def get_mix_tracks(seed_url: str, exclude_urls: set[str]) -> list[Track]:
     exclude_urls filters out anything we've already played this
     session, since mixes reliably include the seed track itself and
     sometimes earlier tracks from the session too.
+
+    These tracks come back with requested_by left as None on purpose,
+    nobody queued them, autoplay pulled them in on its own, so there's
+    no single person who should get to skip past one without a vote.
     """
     video_id = extract_video_id(seed_url)
     if not video_id:

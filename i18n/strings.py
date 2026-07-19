@@ -86,6 +86,32 @@ STRINGS = {
         "queue_loop_state_by": "{user} turned queue loop {state}.",
         "autoplay_state_by": "{user} turned autoplay (24/7) mode {state}.",
         "stopped_cleared_by": "{user} stopped playback and cleared the queue.",
+
+        # vote system
+        "vote_prompt": "{user} wants to **{action}**. Tap below if you agree.",
+        "vote_tally_label": "Votes",
+        "vote_in_progress_title": "Vote In Progress",
+        "vote_passed_title": "Vote Passed",
+        "vote_failed_title": "Vote Failed",
+        "vote_already_cast": "You've already voted on this one.",
+        "vote_already_decided": "This vote is already over.",
+        "vote_cast_confirm": "Your vote's been counted. ({count}/{threshold})",
+        "vote_in_progress": "A vote's already running in this channel. Wait for it to finish before starting one for **{action}**.",
+
+        # action labels, used inside vote prompts
+        "action_pause": "pause playback",
+        "action_resume": "resume playback",
+        "action_skip": "skip the current song",
+        "action_seek_forward": "jump forward in the song",
+        "action_seek_back": "jump backward in the song",
+        "action_stop": "stop playback and clear the queue",
+        "action_disconnect": "disconnect the bot",
+        "action_shuffle": "shuffle the queue",
+        "action_clearqueue": "clear the queue",
+        "action_remove": "remove a track from the queue",
+        "action_loop": "toggle track loop",
+        "action_loopqueue": "toggle queue loop",
+        "action_autoplay": "toggle autoplay",
     },
     "es": {
         # errors / validation
@@ -163,6 +189,32 @@ STRINGS = {
         "queue_loop_state_by": "{user} puso el bucle de cola en {state}.",
         "autoplay_state_by": "{user} puso el modo de reproducción automática (24/7) en {state}.",
         "stopped_cleared_by": "{user} detuvo la reproducción y vació la cola.",
+
+        # vote system
+        "vote_prompt": "{user} quiere **{action}**. Toca abajo si estás de acuerdo.",
+        "vote_tally_label": "Votos",
+        "vote_in_progress_title": "Votación en curso",
+        "vote_passed_title": "Votación aprobada",
+        "vote_failed_title": "Votación fallida",
+        "vote_already_cast": "Ya votaste en esta votación.",
+        "vote_already_decided": "Esta votación ya terminó.",
+        "vote_cast_confirm": "Tu voto fue contado. ({count}/{threshold})",
+        "vote_in_progress": "Ya hay una votación en curso en este canal. Espera a que termine antes de iniciar una para **{action}**.",
+
+        # action labels, used inside vote prompts
+        "action_pause": "pausar la reproducción",
+        "action_resume": "reanudar la reproducción",
+        "action_skip": "saltar la canción actual",
+        "action_seek_forward": "avanzar en la canción",
+        "action_seek_back": "retroceder en la canción",
+        "action_stop": "detener la reproducción y vaciar la cola",
+        "action_disconnect": "desconectar al bot",
+        "action_shuffle": "mezclar la cola",
+        "action_clearqueue": "vaciar la cola",
+        "action_remove": "eliminar una canción de la cola",
+        "action_loop": "alternar el bucle de canción",
+        "action_loopqueue": "alternar el bucle de cola",
+        "action_autoplay": "alternar la reproducción automática",
     },
 }
 

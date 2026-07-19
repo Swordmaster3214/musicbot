@@ -20,5 +20,14 @@ MAX_QUEUE_SIZE = int(os.getenv("MAX_QUEUE_SIZE", "0"))
 # how many results to grab when searching youtube for a spotify track match
 SPOTIFY_MATCH_SEARCH_DEPTH = int(os.getenv("SPOTIFY_MATCH_SEARCH_DEPTH", "5"))
 
+# discord user ids that skip the playback vote entirely, comma separated.
+# this is a plain env var on purpose, so changing who's on the list means
+# editing .env and restarting the bot rather than adding another admin
+# command that could be run by someone other than the person hosting it
+_raw_vote_bypass = os.getenv("VOTE_BYPASS_USER_IDS", "")
+VOTE_BYPASS_USER_IDS = {
+    int(uid.strip()) for uid in _raw_vote_bypass.split(",") if uid.strip().isdigit()
+}
+
 if not DISCORD_TOKEN:
     raise RuntimeError("DISCORD_TOKEN is missing. Set it in your .env file.")

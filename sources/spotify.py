@@ -1,118 +1,87 @@
 """
-Spotify doesn't let anyone stream raw audio through the API, so this
-module just pulls track/playlist/album/show/episode metadata (title +
-artist, or episode + show name) and hands each one off to the youtube
-module to find a matching stream.
+Alternative to the official Spotify Web API for track resolution.
 
-This is the same approach basically every self-hosted spotify-capable
-discord bot uses under the hood.
+Spotify's Feb 2026 policy change requires Development Mode apps to have
+an owner with an active Premium subscription just to keep working at all,
+even for the read-only metadata lookups we do here. That's a non-starter
+for a bot running under someone's regular account, so instead we scrape
+the public embed page Spotify serves at open.spotify.com/embed/... No
+login, no API keys, no premium required, since it's the same page a
+browser hits to render the little embedded player widget you see on blogs.
+
+This is unofficial and undocumented, so the page structure could change
+without warning. If this starts throwing KeyErrors after a Spotify
+frontend update, that's almost certainly why, so open one of these embed
+urls in a browser and check the __NEXT_DATA__ script tag to see what shifted.
 """
 import asyncio
+import json
 import re
 from typing import Optional
 
-import spotipy
-from spotipy.oauth2 import SpotifyClientCredentials
+import aiohttp
 
-import config
 from sources.youtube import search_or_resolve, Track
 
 SPOTIFY_URL_RE = re.compile(
     r"open\.spotify\.com/(track|playlist|album|show|episode)/([a-zA-Z0-9]+)"
 )
 
-_client: Optional[spotipy.Spotify] = None
+EMBED_URL_TMPL = "https://open.spotify.com/embed/{kind}/{item_id}"
 
-
-def _get_client() -> spotipy.Spotify:
-    global _client
-    if _client is None:
-        if not config.SPOTIFY_CLIENT_ID or not config.SPOTIFY_CLIENT_SECRET:
-            raise RuntimeError(
-                "Spotify credentials aren't configured. Set SPOTIFY_CLIENT_ID "
-                "and SPOTIFY_CLIENT_SECRET in .env to use spotify links."
-            )
-        auth = SpotifyClientCredentials(
-            client_id=config.SPOTIFY_CLIENT_ID,
-            client_secret=config.SPOTIFY_CLIENT_SECRET,
-        )
-        _client = spotipy.Spotify(client_credentials_manager=auth)
-    return _client
+NEXT_DATA_RE = re.compile(
+    r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>',
+    re.DOTALL,
+)
 
 
 def is_spotify_link(url: str) -> bool:
     return bool(SPOTIFY_URL_RE.search(url))
 
 
-def _extract_spotify_meta(url: str) -> tuple[str, list[dict]]:
+async def _fetch_embed_json(kind: str, item_id: str) -> dict:
+    """Grabs the embed page and pulls the JSON blob out of it."""
+    url = EMBED_URL_TMPL.format(kind=kind, item_id=item_id)
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url, headers={"User-Agent": "Mozilla/5.0"}) as resp:
+            if resp.status != 200:
+                raise RuntimeError(f"Embed page returned {resp.status} for {url}")
+            html = await resp.text()
+
+    match = NEXT_DATA_RE.search(html)
+    if not match:
+        raise RuntimeError(f"Couldn't find embed data on the page for {url}")
+
+    data = json.loads(match.group(1))
+    return data["props"]["pageProps"]["state"]["data"]["entity"]
+
+
+def _entity_to_metas(kind: str, entity: dict) -> list[dict]:
     """
-    Blocking spotipy calls, runs in an executor. Returns (kind, list of
-    {title, artist} dicts) for track/playlist/album/show/episode urls.
-    For episodes and shows, "artist" ends up holding the podcast/show
-    name since episodes don't really have an artist in the music sense.
+    Normalizes whatever shape the entity comes back in into a flat list
+    of {title, artist} dicts, same shape the old spotipy version returned.
     """
+    if kind in ("track", "episode"):
+        return [{"title": entity["title"], "artist": entity.get("subtitle", "")}]
+
+    # playlist, album, and show all come back with a trackList
+    metas = []
+    for item in entity.get("trackList", []):
+        title = item.get("title")
+        if not title:
+            continue
+        metas.append({"title": title, "artist": item.get("subtitle", "")})
+    return metas
+
+
+async def resolve_spotify_link(url: str) -> list[Track]:
     match = SPOTIFY_URL_RE.search(url)
     if not match:
         raise ValueError("Not a valid spotify url")
 
     kind, item_id = match.groups()
-    sp = _get_client()
-
-    if kind == "track":
-        track = sp.track(item_id)
-        return kind, [_track_to_meta(track)]
-
-    if kind == "playlist":
-        results = sp.playlist_items(item_id)
-        items = results["items"]
-        while results["next"]:
-            results = sp.next(results)
-            items.extend(results["items"])
-        metas = [_track_to_meta(i["track"]) for i in items if i.get("track")]
-        return kind, metas
-
-    if kind == "album":
-        results = sp.album_tracks(item_id)
-        items = results["items"]
-        while results["next"]:
-            results = sp.next(results)
-            items.extend(results["items"])
-        metas = [_track_to_meta(t) for t in items]
-        return kind, metas
-
-    if kind == "episode":
-        episode = sp.episode(item_id)
-        show_name = episode.get("show", {}).get("name", "")
-        return kind, [{"title": episode["name"], "artist": show_name}]
-
-    if kind == "show":
-        show = sp.show(item_id)
-        show_name = show.get("name", "")
-        results = sp.show_episodes(item_id)
-        items = results["items"]
-        while results["next"]:
-            results = sp.next(results)
-            items.extend(results["items"])
-        metas = [{"title": e["name"], "artist": show_name} for e in items if e]
-        return kind, metas
-
-    raise ValueError(f"Unsupported spotify link type: {kind}")
-
-
-def _track_to_meta(track: dict) -> dict:
-    artists = ", ".join(a["name"] for a in track.get("artists", []))
-    return {"title": track["name"], "artist": artists}
-
-
-async def resolve_spotify_link(url: str) -> list[Track]:
-    """
-    Pulls metadata for the spotify link, then searches youtube for each
-    track or episode. Playlists, albums, and shows get resolved
-    concurrently in small batches so we don't hammer youtube with a
-    hundred requests at once.
-    """
-    loop = asyncio.get_event_loop()
-    kind, metas = await loop.run_in_executor(None, _extract_spotify_meta, url)
+    entity = await _fetch_embed_json(kind, item_id)
+    metas = _entity_to_metas(kind, entity)
 
     async def resolve_one(meta: dict) -> Optional[Track]:
         query = f"{meta['title']} {meta['artist']}".strip()
@@ -128,6 +97,7 @@ async def resolve_spotify_link(url: str) -> list[Track]:
         found.source = "spotify"
         return found
 
+    # small batches so we don't hammer youtube with a hundred searches at once
     batch_size = 5
     tracks: list[Track] = []
     for i in range(0, len(metas), batch_size):

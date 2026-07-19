@@ -1,11 +1,11 @@
+# sources/youtube.py
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
 import yt_dlp
 
 YDL_OPTS = {
-    "format": "bestaudio[ext=m4a]/bestaudio/best",
-    "cookiesfrombrowser": ("firefox",),
+    "format": "bestaudio",
     "noplaylist": False,
     "quiet": False,
     "no_warnings": False,
@@ -16,7 +16,7 @@ YDL_OPTS = {
     "retries": 3,                 # Give it a few chances before throwing an error
     "extractor_args": {
         "youtube": {
-            "player_client" : ["default", "mweb", "android", "ios", "web"]
+            "player_client" : ["default"]
         }
     },
 }
@@ -35,6 +35,12 @@ class Track:
     artist: Optional[str] = None
     source: str = "youtube"
     thumbnail: Optional[str] = None
+    # headers the resolved stream url needs to actually be accepted by
+    # googlevideo. mweb/web formats check these against what the PO
+    # token was generated for, a bare url without them gets a 403 even
+    # though the url and token are both valid. only set for youtube
+    # tracks, direct links don't need this.
+    stream_headers: Optional[dict] = None
 
 
 def _extract(query: str, is_search: bool, flat: bool = False) -> list[dict]:
@@ -162,10 +168,28 @@ async def search_or_resolve(query: str) -> list[Track]:
         )
     return tracks
 
-def _build_ffmpeg_source(stream_url: str, start_seconds: float = 0):
+
+def _headers_to_ffmpeg_arg(headers: dict) -> str:
+    """
+    Turns a requests-style header dict into the single quoted -headers
+    argument ffmpeg wants, each header terminated with a literal
+    CRLF. Without this, mweb/web stream urls come back with a valid
+    PO token and still get a 403 from googlevideo, since those clients
+    check the request headers (User-Agent especially) against what the
+    token was minted for. android/ios don't seem to care as much,
+    which is why this only bit us after narrowing the client list
+    down to just mweb.
+    """
+    header_lines = "".join(f"{key}: {value}\r\n" for key, value in headers.items())
+    return f'-headers "{header_lines}"'
+
+
+def _build_ffmpeg_source(stream_url: str, start_seconds: float = 0, headers: Optional[dict] = None):
     import discord
 
     before_options = FFMPEG_OPTS["before_options"]
+    if headers:
+        before_options = f"{before_options} {_headers_to_ffmpeg_arg(headers)}"
     if start_seconds > 0:
         before_options = f"-ss {start_seconds} {before_options}"
 
@@ -182,11 +206,15 @@ async def get_playable_source(track: Track, start_seconds: float = 0):
     if not entries:
         raise RuntimeError(f"Could not re-resolve stream for '{track.title}'")
 
-    fresh_stream_url = entries[0]["url"]
+    resolved = entries[0]
+    fresh_stream_url = resolved["url"]
+    headers = resolved.get("http_headers")
+    print(f"[PLAYER] Resolved headers: {headers}")
 
     track.stream_url = fresh_stream_url
+    track.stream_headers = headers
 
-    return _build_ffmpeg_source(fresh_stream_url, start_seconds)
+    return _build_ffmpeg_source(fresh_stream_url, start_seconds, headers)
 
 def get_playable_source_from_cache(track: Track, start_seconds: float = 0):
     """
@@ -195,8 +223,11 @@ def get_playable_source_from_cache(track: Track, start_seconds: float = 0):
     seeking, since the url was just refreshed moments ago and doesn't
     need to be looked up again. This is what keeps /seekforward and
     /seekback fast instead of hitting youtube on every nudge.
+
+    Reuses the headers captured alongside that url for the same reason,
+    a fresh url with no headers would just get another 403.
     """
-    return _build_ffmpeg_source(track.stream_url, start_seconds)
+    return _build_ffmpeg_source(track.stream_url, start_seconds, track.stream_headers)
 
 import re
 

@@ -26,13 +26,19 @@ class VoteView(discord.ui.View):
     once the vote passes or the 30 second timeout runs out.
     """
 
-    def __init__(self, threshold: int, lang: str, result: asyncio.Future):
+    def __init__(self, threshold: int, lang: str, result: asyncio.Future, description: str = None):
         super().__init__(timeout=30)
         self.threshold = threshold
         self.lang = lang
         self.voters: set[int] = set()
         self.message: Optional[discord.Message] = None
         self.result = result
+        # the "so-and-so wants to do X, vote below" line. kept on the view
+        # itself so every rebuild of the embed (a new vote coming in, the
+        # timeout firing) can put it back, instead of relying on whoever
+        # built the first embed to set it once and every later edit
+        # silently dropping it
+        self.description = description
 
     def _build_embed(self, passed: bool = False, failed: bool = False) -> discord.Embed:
         if passed:
@@ -45,7 +51,7 @@ class VoteView(discord.ui.View):
             title = t("vote_in_progress_title", self.lang)
             color = discord.Color.gold()
 
-        embed = discord.Embed(title=title, color=color)
+        embed = discord.Embed(title=title, color=color, description=self.description)
         embed.add_field(name=t("vote_tally_label", self.lang), value=f"{len(self.voters)}/{self.threshold}")
         return embed
 
@@ -138,12 +144,12 @@ class VoteManager:
 
         threshold = len(eligible) // 2 + 1
         result: asyncio.Future = asyncio.get_running_loop().create_future()
-        view = VoteView(threshold, lang, result)
+        description = t("vote_prompt", lang, action=action_label, user=interaction.user.display_name)
+        view = VoteView(threshold, lang, result, description=description)
         self._active[guild_id] = view
 
         try:
             embed = view._build_embed()
-            embed.description = t("vote_prompt", lang, action=action_label, user=interaction.user.display_name)
             message = await interaction.followup.send(embed=embed, view=view, wait=True)
             view.message = message
 

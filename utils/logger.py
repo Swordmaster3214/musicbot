@@ -38,11 +38,18 @@ def _configure_root():
     root.addHandler(handler)
     root.setLevel(level)
 
-    # discord.py's own logger is fairly chatty at DEBUG, so leave it at
-    # INFO regardless of what we ask for ourselves unless someone
-    # explicitly wants full discord.py internals too
-    if level > logging.DEBUG:
-        logging.getLogger("discord").setLevel(logging.INFO)
+    # discord.py's own loggers (discord, discord.gateway, discord.client,
+    # discord.voice_client, discord.http, etc, they're all children of
+    # "discord" so setting the parent covers them) are noisy even at
+    # INFO: heartbeat acks, shard events, voice websocket handshakes,
+    # command tree sync internals. That's a different concern from our
+    # own MUSICBOT_LOG_LEVEL, so it gets its own knob defaulting to
+    # WARNING. Bump MUSICBOT_DISCORDPY_LOG_LEVEL to INFO or DEBUG in .env
+    # if discord.py's internals themselves are ever what you're chasing
+    # (a real gateway/voice bug rather than one of ours).
+    discordpy_level_name = os.getenv("MUSICBOT_DISCORDPY_LOG_LEVEL", "WARNING").upper()
+    discordpy_level = getattr(logging, discordpy_level_name, logging.WARNING)
+    logging.getLogger("discord").setLevel(discordpy_level)
 
     _CONFIGURED = True
 

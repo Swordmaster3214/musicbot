@@ -62,13 +62,53 @@ async def _fetch_embed_json(kind: str, item_id: str) -> dict:
     return data["props"]["pageProps"]["state"]["data"]["entity"]
 
 
+def _extract_artist(item: dict, context: str) -> str:
+    """
+    Pulls an artist name out of whatever shape this particular entity
+    or trackList item happens to be in. 'subtitle' is the field the
+    top-level track/episode entity reliably has, but playlist/album
+    trackList items don't always carry it, sometimes the artist only
+    shows up under an 'artists' list of {"name": ...} objects instead
+    (or, on some responses, 'artistName' directly).
+
+    Silently defaulting to "" here (like a plain item.get("subtitle", ""))
+    is exactly what let this go unnoticed before: the query still built
+    fine, it just quietly lost the artist half of it, so youtube search
+    was left picking a plausible-looking result from title alone. If
+    none of the known shapes match, this logs the item's actual keys
+    at warning level so a JSON shape change like this is visible next
+    time instead of just showing up as "the bot picked the wrong song."
+    """
+    subtitle = item.get("subtitle")
+    if subtitle:
+        return subtitle
+
+    artists = item.get("artists")
+    if artists:
+        names = [a.get("name") for a in artists if isinstance(a, dict) and a.get("name")]
+        if names:
+            return ", ".join(names)
+
+    artist_name = item.get("artistName")
+    if artist_name:
+        return artist_name
+
+    logger.warning(
+        f"[spotify] couldn't find an artist field for {context}, tried "
+        f"subtitle/artists/artistName, none present. Item keys were: "
+        f"{list(item.keys())}. Falling back to title-only search, which "
+        f"is more likely to match the wrong song."
+    )
+    return ""
+
+
 def _entity_to_metas(kind: str, entity: dict) -> list[dict]:
     """
     Normalizes whatever shape the entity comes back in into a flat list
     of {title, artist} dicts, same shape the old spotipy version returned.
     """
     if kind in ("track", "episode"):
-        return [{"title": entity["title"], "artist": entity.get("subtitle", "")}]
+        return [{"title": entity["title"], "artist": _extract_artist(entity, context=f"track entity '{entity.get('title')}'")}]
 
     # playlist, album, and show all come back with a trackList
     metas = []
@@ -76,7 +116,7 @@ def _entity_to_metas(kind: str, entity: dict) -> list[dict]:
         title = item.get("title")
         if not title:
             continue
-        metas.append({"title": title, "artist": item.get("subtitle", "")})
+        metas.append({"title": title, "artist": _extract_artist(item, context=f"trackList item '{title}'")})
     return metas
 
 
@@ -93,6 +133,10 @@ async def resolve_spotify_link(url: str) -> list[Track]:
 
     async def resolve_one(meta: dict) -> Optional[Track]:
         query = f"{meta['title']} {meta['artist']}".strip()
+        if not meta["artist"]:
+            logger.debug(f"[spotify] searching youtube title-only (no artist resolved): '{query}'")
+        else:
+            logger.debug(f"[spotify] searching youtube: '{query}'")
         try:
             results = await search_or_resolve(query)
         except Exception as e:

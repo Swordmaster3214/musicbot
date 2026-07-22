@@ -19,7 +19,7 @@ from db.cache import SongCache
 import sources.youtube as youtube_source
 import sources.spotify as spotify_source
 import sources.direct as direct_source
-from utils.helpers import now_playing_embed, queue_embed
+from utils.helpers import now_playing_embed, queue_embed, escape_title
 from utils.logger import get_logger
 from i18n.strings import t, SUPPORTED_LANGUAGES
 
@@ -377,7 +377,7 @@ class Music(commands.Cog):
             await self._start_playback_if_idle(guild_id)
 
             if len(tracks) == 1:
-                await interaction.followup.send(t("queued_single", lang, title=tracks[0].title))
+                await interaction.followup.send(t("queued_single", lang, title=escape_title(tracks[0].title)))
             else:
                 await interaction.followup.send(t("queued_playlist", lang, count=len(tracks)))
         except youtube_source.AgeRestrictedError:
@@ -510,7 +510,7 @@ class Music(commands.Cog):
             await interaction.followup.send(t("remove_nothing", lang))
         else:
             self.player_manager.get(guild_id).schedule_prewarm()
-            await interaction.followup.send(t("removed_track", lang, title=track.title))
+            await interaction.followup.send(t("removed_track", lang, title=escape_title(track.title)))
 
     # ---------- playback control ----------
 

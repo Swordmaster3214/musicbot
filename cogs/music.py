@@ -20,7 +20,10 @@ import sources.youtube as youtube_source
 import sources.spotify as spotify_source
 import sources.direct as direct_source
 from utils.helpers import now_playing_embed, queue_embed
+from utils.logger import get_logger
 from i18n.strings import t, SUPPORTED_LANGUAGES
+
+logger = get_logger(__name__)
 
 
 class NowPlayingView(discord.ui.View):
@@ -216,6 +219,7 @@ class Music(commands.Cog):
             await interaction.response.defer()
 
         if owns_target:
+            logger.debug(f"[gate] guild {guild_id}: {interaction.user.id} owns the target track, skipping vote for '{action_key}'")
             return True
 
         player = self.player_manager.get(guild_id)
@@ -224,6 +228,7 @@ class Music(commands.Cog):
             channel = interaction.user.voice.channel
 
         if channel is None:
+            logger.debug(f"[gate] guild {guild_id}: no resolvable voice channel for gating '{action_key}'")
             await interaction.followup.send(t("err_not_in_voice", lang))
             return False
 
@@ -241,8 +246,22 @@ class Music(commands.Cog):
         guild_id = interaction.guild_id
         player = self.player_manager.get(guild_id)
 
-        if interaction.guild.voice_client:
-            player.voice_client = interaction.guild.voice_client
+        # discord.py's own record of the guild's voice client can go
+        # stale (gateway session dropped and never got cleaned up,
+        # etc), and adopting it blindly here is the root of the "bot
+        # thinks it's already connected but isn't" symptom. logging
+        # both sides of this before we act on it is what lets us catch
+        # a real mismatch the next time it happens.
+        discord_side_vc = interaction.guild.voice_client
+        logger.debug(
+            f"[ensure_voice] guild {guild_id}: discord.py voice_client={discord_side_vc!r} "
+            f"(connected={discord_side_vc.is_connected() if discord_side_vc else None}) "
+            f"our tracked voice_client={player.voice_client!r} "
+            f"user requesting channel={interaction.user.voice.channel.id}"
+        )
+
+        if discord_side_vc:
+            player.voice_client = discord_side_vc
 
         await player.connect(interaction.user.voice.channel)
 
@@ -261,6 +280,7 @@ class Music(commands.Cog):
         """
         channel = self.now_playing_channels.get(guild_id)
         if channel is None:
+            logger.debug(f"[now_playing] guild {guild_id}: no channel on record, can't post now playing message")
             return
 
         lang = self._lang(guild_id)
@@ -274,7 +294,7 @@ class Music(commands.Cog):
                 return
             except discord.NotFound:
                 # message got deleted out from under us, just send a new one
-                pass
+                logger.debug(f"[now_playing] guild {guild_id}: existing message was deleted, sending a fresh one")
             except discord.HTTPException as e:
                 # covers the interaction webhook token expiring (401,
                 # code 50027) on a message that was originally created
@@ -285,7 +305,7 @@ class Music(commands.Cog):
                 # send a fresh plain message instead of crashing playback
                 if e.code != 50027:
                     raise
-                print(f"[music] stale interaction webhook for guild {guild_id}, reposting now playing message")
+                logger.info(f"[now_playing] guild {guild_id}: stale interaction webhook, reposting now playing message")
 
         message = await channel.send(embed=embed, view=view)
         self.now_playing_messages[guild_id] = message
@@ -321,44 +341,40 @@ class Music(commands.Cog):
     async def play(self, interaction: discord.Interaction, query: str):
         lang = self._lang(interaction.guild_id)
 
-        print(f"\n[PLAY] Command invoked by {interaction.user} (Guild ID: {interaction.guild_id})")
-        print(f"[PLAY] Query received: '{query}'")
+        logger.info(f"[play] invoked by {interaction.user} (guild {interaction.guild_id}), query: '{query}'")
 
         await interaction.response.defer()
 
         try:
             if not await self._ensure_voice(interaction):
-                print("[PLAY] Voice verification failed (User not in a channel or bot couldn't connect.)")
+                logger.debug("[play] voice verification failed (user not in a channel or bot couldn't connect)")
                 return
 
             guild_id = interaction.guild_id
             queue = self.queue_manager.get(guild_id)
 
-            print(f"[PLAY] Resolving query through source extractors...")
+            logger.debug("[play] resolving query through source extractors...")
             tracks = await self._resolve_query(query)
-            print(f"[PLAY] Resolution complete. Found {len(tracks)} track(s).")
+            logger.info(f"[play] resolution complete, found {len(tracks)} track(s)")
 
             if not tracks:
                 await interaction.followup.send(t("err_no_results_query", lang))
                 return
 
             if config.MAX_QUEUE_SIZE and len(queue) + len(tracks) > config.MAX_QUEUE_SIZE:
-                print(f"[PLAY] Aborting: Queue size limit reached")
+                logger.debug("[play] aborting, queue size limit reached")
                 await interaction.followup.send(t("err_max_queue", lang, max=config.MAX_QUEUE_SIZE))
                 return
 
             self._stamp_requester(tracks, interaction.user.id)
 
-            print(f"[PLAY] Enqueuing tracks and evaluating cache eligibility...")
             queue.add_many(tracks)
             for t_ in tracks:
                 if t_.source == "direct" and not direct_source.has_metadata(t_):
                     continue  # no metadata, requirement says don't cache these
                 self._cache_if_eligible(t_)
 
-            print("[PLAY] Booting playback loop if player is currently idle...")
             await self._start_playback_if_idle(guild_id)
-            print("[PLAY] Playback checks finished successfully.")
 
             if len(tracks) == 1:
                 await interaction.followup.send(t("queued_single", lang, title=tracks[0].title))
@@ -369,17 +385,15 @@ class Music(commands.Cog):
             # generic handler below, since "no results" is misleading
             # when we actually found the video and just can't play it
             # without a signed-in, age-verified account
-            print(f"[PLAY] Age-restricted video blocked the request for query: '{query}'")
+            logger.warning(f"[play] age-restricted video blocked the request for query: '{query}'")
             await interaction.followup.send(t("err_age_restricted", lang))
         except Exception as e:
-            print(f"\n [CRITICAL ERROR] Exception caught in /play execution chain: {e}")
-            import traceback
-            traceback.print_exc()
+            logger.exception(f"[play] exception in /play execution chain for query '{query}': {e}")
 
             try:
                 await interaction.followup.send(t("err_play_generic", lang, error=e))
             except Exception as followup_err:
-                print(f"[ERROR] Could not send failure followup message: {followup_err}")
+                logger.error(f"[play] could not send failure followup message: {followup_err}")
 
     async def _resolve_query(self, query: str):
         if spotify_source.is_spotify_link(query):
@@ -401,7 +415,7 @@ class Music(commands.Cog):
     async def shuffleplay(self, interaction: discord.Interaction, query: str):
         lang = self._lang(interaction.guild_id)
 
-        print(f"\n[SHUFFLEPLAY] Command invoked by {interaction.user} with query: '{query}'")
+        logger.info(f"[shuffleplay] invoked by {interaction.user} with query: '{query}'")
         await interaction.response.defer()
 
         try:
@@ -411,9 +425,8 @@ class Music(commands.Cog):
             guild_id = interaction.guild_id
             queue = self.queue_manager.get(guild_id)
 
-            print("[SHUFFLEPLAY] Resolving playlist query...")
             tracks = await self._resolve_query(query)
-            print(f"[SHUFFLEPLAY] Resolved {len(tracks)} tracks.")
+            logger.info(f"[shuffleplay] resolved {len(tracks)} track(s)")
 
             if not tracks:
                 await interaction.followup.send(t("err_no_results_playlist", lang))
@@ -423,28 +436,24 @@ class Music(commands.Cog):
 
             queue.add_many(tracks)
             queue.shuffle()
-            print("[SHUFFLEPLAY] Queue randomized.")
 
             for t_ in tracks:
                 if t_.source == "direct" and not direct_source.has_metadata(t_):
                     continue
                 self._cache_if_eligible(t_)
 
-            print("[SHUFFLEPLAY] Triggering player...")
             await self._start_playback_if_idle(guild_id)
             await interaction.followup.send(t("queued_shuffled", lang, count=len(tracks)))
 
         except youtube_source.AgeRestrictedError:
-            print(f"[SHUFFLEPLAY] Age-restricted video blocked the request for query: '{query}'")
+            logger.warning(f"[shuffleplay] age-restricted video blocked the request for query: '{query}'")
             await interaction.followup.send(t("err_age_restricted", lang))
         except Exception as e:
-            print(f"\n[CRITICAL ERROR] Exception caught in /shuffleplay execution chain: {e}")
-            import traceback
-            traceback.print_exc()
+            logger.exception(f"[shuffleplay] exception in /shuffleplay execution chain for query '{query}': {e}")
             try:
                 await interaction.followup.send(t("err_shuffleplay_generic", lang, error=e))
             except Exception as followup_err:
-                print(f"[ERROR] Could not send failure followup message: {followup_err}")
+                logger.error(f"[shuffleplay] could not send failure followup message: {followup_err}")
 
     @app_commands.command(name="shuffle", description="Shuffle the current queue")
     async def shuffle(self, interaction: discord.Interaction):

@@ -18,6 +18,9 @@ from typing import Optional
 import difflib
 
 import config
+from utils.logger import get_logger
+
+logger = get_logger(__name__)
 
 
 @dataclass
@@ -33,6 +36,7 @@ class SongCache:
     def __init__(self, db_path: str = None):
         path = Path(db_path or config.DB_PATH)
         path.parent.mkdir(parents=True, exist_ok=True)
+        logger.info(f"[cache] opening sqlite db at {path}")
         self.conn = sqlite3.connect(str(path), check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self._init_schema()
@@ -42,28 +46,35 @@ class SongCache:
         with open(schema_path, "r") as f:
             self.conn.executescript(f.read())
         self.conn.commit()
+        logger.debug("[cache] schema applied/verified")
 
     def add(self, title: str, url: str, source: str, artist: str = None,
             duration_seconds: int = None):
         """Insert a song into the cache. Silently ignores duplicates."""
         try:
-            self.conn.execute(
+            cur = self.conn.execute(
                 """INSERT OR IGNORE INTO song_cache
                    (title, artist, url, source, duration_seconds)
                    VALUES (?, ?, ?, ?, ?)""",
                 (title, artist, url, source, duration_seconds),
             )
             self.conn.commit()
+            if cur.rowcount:
+                logger.debug(f"[cache] added '{title}' (source={source})")
+            else:
+                logger.debug(f"[cache] '{title}' already cached, skipped")
         except sqlite3.Error as e:
             # cache writes should never crash playback, just log and move on
-            print(f"[SongCache] failed to insert '{title}': {e}")
+            logger.warning(f"[cache] failed to insert '{title}': {e}")
 
     def exact_match(self, title: str) -> Optional[CachedSong]:
         row = self.conn.execute(
             "SELECT * FROM song_cache WHERE title = ? COLLATE NOCASE LIMIT 1",
             (title,),
         ).fetchone()
-        return self._row_to_song(row) if row else None
+        result = self._row_to_song(row) if row else None
+        logger.debug(f"[cache] exact_match('{title}') -> {'hit' if result else 'miss'}")
+        return result
 
     def fuzzy_search(self, query: str, limit: int = 5) -> list[CachedSong]:
         """
@@ -92,6 +103,7 @@ class SongCache:
         for title in seen:
             row = next(r for r in rows if r["title"] == title)
             results.append(self._row_to_song(row))
+        logger.debug(f"[cache] fuzzy_search('{query}') -> {len(results)} result(s) out of {len(rows)} cached title(s)")
         return results
 
     def _row_to_song(self, row) -> CachedSong:
@@ -120,6 +132,8 @@ class SongCache:
             (guild_id, language),
         )
         self.conn.commit()
+        logger.info(f"[cache] guild {guild_id} language set to '{language}'")
 
     def close(self):
+        logger.info("[cache] closing sqlite connection")
         self.conn.close()

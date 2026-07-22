@@ -5,7 +5,11 @@ Copy .env.example to .env and fill it in before running.
 import os
 from dotenv import load_dotenv
 
+from utils.logger import get_logger
+
 load_dotenv()
+
+logger = get_logger(__name__)
 
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 SPOTIFY_CLIENT_ID = os.getenv("SPOTIFY_CLIENT_ID")
@@ -31,3 +35,12 @@ VOTE_BYPASS_USER_IDS = {
 
 if not DISCORD_TOKEN:
     raise RuntimeError("DISCORD_TOKEN is missing. Set it in your .env file.")
+
+# log the config we actually ended up with (never the token itself),
+# so a support request can start with "here's what config.py loaded"
+# instead of us guessing whether an env var actually took effect
+logger.info(
+    f"[config] loaded: db_path={DB_PATH} max_queue_size={MAX_QUEUE_SIZE or 'unlimited'} "
+    f"spotify_configured={bool(SPOTIFY_CLIENT_ID)} vote_bypass_count={len(VOTE_BYPASS_USER_IDS)} "
+    f"log_level={os.getenv('MUSICBOT_LOG_LEVEL', 'INFO').upper()}"
+)

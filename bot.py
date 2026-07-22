@@ -12,6 +12,9 @@ import discord
 from discord.ext import commands
 
 import config
+from utils.logger import get_logger
+
+logger = get_logger(__name__)
 
 INTENTS = discord.Intents.default()
 INTENTS.voice_states = True
@@ -21,12 +24,28 @@ bot = commands.Bot(command_prefix="!", intents=INTENTS)
 
 @bot.event
 async def on_ready():
-    print(f"Logged in as {bot.user} (id: {bot.user.id})")
+    logger.info(f"Logged in as {bot.user} (id: {bot.user.id})")
+    logger.info(f"Connected to {len(bot.guilds)} guild(s): {[g.id for g in bot.guilds]}")
     try:
         synced = await bot.tree.sync()
-        print(f"Synced {len(synced)} slash command(s).")
+        logger.info(f"Synced {len(synced)} slash command(s)")
     except Exception as e:
-        print(f"Failed to sync commands: {e}")
+        logger.error(f"Failed to sync commands: {e}")
+
+
+@bot.event
+async def on_disconnect():
+    # discord.py fires this on any gateway drop, not just a clean
+    # shutdown. logging it helps tell "the bot's voice connections got
+    # cut because the whole gateway session dropped" apart from "voice
+    # specifically misbehaved", which matters when chasing the
+    # occasional stale-voice-client issue
+    logger.warning("Gateway connection dropped (on_disconnect fired)")
+
+
+@bot.event
+async def on_resumed():
+    logger.info("Gateway session resumed")
 
 
 async def shutdown():
@@ -35,12 +54,14 @@ async def shutdown():
     so the ffmpeg subprocesses attached to them get torn down cleanly,
     then closes the bot.
     """
-    print("\nShutting down...")
-    for vc in list(bot.voice_clients):
+    logger.info("Shutting down...")
+    active_vcs = list(bot.voice_clients)
+    logger.info(f"Disconnecting {len(active_vcs)} active voice client(s)")
+    for vc in active_vcs:
         try:
             await vc.disconnect(force=True)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"Error disconnecting voice client for guild {getattr(vc.channel, 'guild', None)}: {e}")
     await bot.close()
 
 
@@ -51,6 +72,7 @@ async def main():
 
     async with bot:
         await bot.load_extension("cogs.music")
+        logger.info("Loaded cogs.music, starting bot...")
         await bot.start(config.DISCORD_TOKEN)
 
 

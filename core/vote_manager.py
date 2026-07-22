@@ -17,6 +17,9 @@ import discord
 
 import config
 from i18n.strings import t
+from utils.logger import get_logger
+
+logger = get_logger(__name__)
 
 
 class VoteView(discord.ui.View):
@@ -66,6 +69,7 @@ class VoteView(discord.ui.View):
             return
 
         self.voters.add(interaction.user.id)
+        logger.debug(f"[vote] guild {interaction.guild_id}: vote cast, now {len(self.voters)}/{self.threshold}")
         await interaction.response.send_message(
             t("vote_cast_confirm", self.lang, count=len(self.voters), threshold=self.threshold),
             ephemeral=True,
@@ -73,6 +77,7 @@ class VoteView(discord.ui.View):
 
         passed = len(self.voters) >= self.threshold
         if passed and not self.result.done():
+            logger.info(f"[vote] guild {interaction.guild_id}: vote passed with {len(self.voters)}/{self.threshold}")
             self.result.set_result(True)
             for item in self.children:
                 item.disabled = True
@@ -81,11 +86,12 @@ class VoteView(discord.ui.View):
         if self.message:
             try:
                 await self.message.edit(embed=self._build_embed(passed=passed), view=self)
-            except discord.HTTPException:
-                pass
+            except discord.HTTPException as e:
+                logger.debug(f"[vote] guild {interaction.guild_id}: failed to edit vote message: {e}")
 
     async def on_timeout(self):
         if not self.result.done():
+            logger.info(f"[vote] guild timed out with {len(self.voters)}/{self.threshold}, vote fails")
             self.result.set_result(False)
 
         for item in self.children:
@@ -94,8 +100,8 @@ class VoteView(discord.ui.View):
         if self.message:
             try:
                 await self.message.edit(embed=self._build_embed(failed=True), view=self)
-            except discord.HTTPException:
-                pass
+            except discord.HTTPException as e:
+                logger.debug(f"[vote] failed to edit timed-out vote message: {e}")
 
 
 class VoteManager:
@@ -132,17 +138,21 @@ class VoteManager:
         guild_id = interaction.guild_id
 
         if self.is_bypassed(interaction.user.id):
+            logger.debug(f"[vote] guild {guild_id}: {interaction.user.id} is on the bypass list, skipping vote")
             return True
 
         eligible = [m for m in channel.members if not m.bot]
         if len(eligible) <= 1:
+            logger.debug(f"[vote] guild {guild_id}: only {len(eligible)} eligible voter(s) in channel, auto-passing")
             return True
 
         if guild_id in self._active:
+            logger.debug(f"[vote] guild {guild_id}: vote already in progress, rejecting new request for '{action_label}'")
             await interaction.followup.send(t("vote_in_progress", lang, action=action_label))
             return False
 
         threshold = len(eligible) // 2 + 1
+        logger.info(f"[vote] guild {guild_id}: starting vote for '{action_label}', threshold {threshold}/{len(eligible)}")
         result: asyncio.Future = asyncio.get_running_loop().create_future()
         description = t("vote_prompt", lang, action=action_label, user=interaction.user.display_name)
         view = VoteView(threshold, lang, result, description=description)
@@ -153,6 +163,8 @@ class VoteManager:
             message = await interaction.followup.send(embed=embed, view=view, wait=True)
             view.message = message
 
-            return await result
+            outcome = await result
+            logger.info(f"[vote] guild {guild_id}: vote for '{action_label}' resolved to {outcome}")
+            return outcome
         finally:
             del self._active[guild_id]

@@ -14,6 +14,10 @@ import aiohttp
 from mutagen import File as MutagenFile
 
 from sources.youtube import Track, FFMPEG_OPTS
+from utils.logger import get_logger
+from utils.audio_debug import build_logged_ffmpeg_source
+
+logger = get_logger(__name__)
 
 AUDIO_EXTENSIONS = (".mp3", ".flac", ".wav", ".ogg", ".m4a", ".opus", ".aac")
 
@@ -35,6 +39,7 @@ async def resolve_direct_link(url: str) -> Track:
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(url) as resp:
+                logger.debug(f"[direct] GET {url} -> {resp.status}")
                 # grab the first chunk, most tag formats (ID3, etc)
                 # live at the start of the file
                 chunk = await resp.content.read(256 * 1024)
@@ -45,8 +50,11 @@ async def resolve_direct_link(url: str) -> Track:
             artist = _get_tag(audio.tags, ["TPE1", "artist", "\xa9ART"])
             if audio.info and hasattr(audio.info, "length"):
                 duration = int(audio.info.length)
+            logger.debug(f"[direct] tags read for {url}: title={title!r} artist={artist!r} duration={duration}")
+        else:
+            logger.debug(f"[direct] no tags found in {url}, will fall back to filename")
     except Exception as e:
-        print(f"[direct] metadata read failed for {url}: {e}")
+        logger.warning(f"[direct] metadata read failed for {url}: {e}")
 
     if not title:
         title = _filename_from_url(url)
@@ -84,11 +92,14 @@ def has_metadata(track: Track) -> bool:
 
 
 async def get_playable_source(track: Track, start_seconds: float = 0):
-    import discord
-
     before_options = FFMPEG_OPTS["before_options"]
     if start_seconds > 0:
         before_options = f"-ss {start_seconds} {before_options}"
 
-    opts = {"before_options": before_options, "options": FFMPEG_OPTS["options"]}
-    return discord.FFmpegPCMAudio(track.stream_url, **opts)
+    logger.debug(f"[direct] building ffmpeg source for '{track.title}' (start={start_seconds}s)")
+    return build_logged_ffmpeg_source(
+        track.stream_url,
+        before_options=before_options,
+        options=FFMPEG_OPTS["options"],
+        track_title=track.title,
+    )

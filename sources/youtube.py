@@ -1,8 +1,15 @@
 # sources/youtube.py
 import asyncio
+import time
 from dataclasses import dataclass, field
 from typing import Optional
+from urllib.parse import urlparse, parse_qs
 import yt_dlp
+
+from utils.logger import get_logger
+from utils.audio_debug import build_logged_ffmpeg_source
+
+logger = get_logger(__name__)
 
 YDL_OPTS = {
     "format": "bestaudio",
@@ -67,6 +74,12 @@ class Track:
     # resolves, no matter which source module built the track. this is
     # what lets someone skip/pause/seek their own song without a vote.
     requested_by: Optional[int] = None
+    # wall clock time (time.time()) that stream_url was last resolved.
+    # only used for logging/diagnostics right now, it tells us how old
+    # a reused stream url was when something like a seek or a delayed
+    # play_next reused it instead of resolving fresh, which is the
+    # prime suspect whenever a track suddenly throws a 403 mid-playback.
+    stream_resolved_at: Optional[float] = None
 
 
 def _is_age_restriction_error(error_text: str) -> bool:
@@ -74,9 +87,66 @@ def _is_age_restriction_error(error_text: str) -> bool:
     return any(marker in lowered for marker in AGE_RESTRICTION_MARKERS)
 
 
+def _log_extraction_result(info: dict, context: str):
+    """
+    Logs the bits of a resolved yt-dlp info dict that actually help
+    when something goes wrong later. format_id/protocol/url host can
+    all vary between runs since we use the 'default' (multi-client
+    fallback) player_client, and that variability is exactly what's
+    made past issues (like the header/client signing mismatch) hard
+    to pin down without seeing it logged at resolution time.
+    """
+    try:
+        fmt_id = info.get("format_id")
+        protocol = info.get("protocol")
+        url = info.get("url")
+        host = urlparse(url).netloc if url else None
+        logger.debug(
+            f"[yt-dlp] {context}: format_id={fmt_id} protocol={protocol} host={host}"
+        )
+    except Exception as e:
+        logger.debug(f"[yt-dlp] couldn't log extraction diagnostics for {context}: {e}")
+
+
+def _log_stream_url_diagnostics(url: str, track_title: str):
+    """
+    Googlevideo urls carry an 'expire' query param (unix timestamp).
+    Parsing it out tells us exactly how much runway a resolved url had
+    left the moment we grabbed it, and lets us flag on the spot if we
+    somehow already resolved something that's expired or about to be.
+    This is the main diagnostic for the occasional 403s, since a stale
+    reused url is the most likely cause of one.
+    """
+    try:
+        parsed = urlparse(url)
+        qs = parse_qs(parsed.query)
+        expire_raw = qs.get("expire", [None])[0]
+        host = parsed.netloc
+
+        if expire_raw is None:
+            logger.info(f"[stream] '{track_title}' resolved to host={host} (no expire param found on this url)")
+            return
+
+        remaining = int(expire_raw) - int(time.time())
+        if remaining < 0:
+            logger.warning(
+                f"[stream] '{track_title}' resolved to host={host} but its expire timestamp "
+                f"is already {-remaining}s in the past, this url is dead on arrival"
+            )
+        elif remaining < 60:
+            logger.warning(
+                f"[stream] '{track_title}' resolved to host={host} with only {remaining}s "
+                f"left before it expires"
+            )
+        else:
+            logger.info(f"[stream] '{track_title}' resolved to host={host}, expires in {remaining}s")
+    except Exception as e:
+        logger.debug(f"couldn't parse stream url diagnostics for '{track_title}': {e}")
+
+
 def _extract(query: str, is_search: bool, flat: bool = False) -> list[dict]:
     """Runs in a thread executor, yt-dlp is blocking."""
-    print(f"  [YT-DLP] Extracting metadata for: '{query}' (Search mode: {is_search}, Flat: {flat})")
+    logger.debug(f"[yt-dlp] extracting metadata for: '{query}' (search={is_search}, flat={flat})")
     opts = dict(YDL_OPTS)
     if flat:
         # skips resolving an actual playable stream for every entry, just
@@ -93,16 +163,18 @@ def _extract(query: str, is_search: bool, flat: bool = False) -> list[dict]:
             info = ydl.extract_info(target, download=False)
 
             if not info:
-                print(f"  [YT-DLP WARNING] Extraction returned empty info for target: '{target}'")
+                logger.warning(f"[yt-dlp] extraction returned empty info for target: '{target}'")
                 return []
 
             # playlists come back with an 'entries' key, single tracks don't
             if "entries" in info:
                 valid_entries = [e for e in info["entries"] if e]
-                print(f"  [YT-DLP] Extracted container/playlist. Found {len(valid_entries)} entries.")
+                logger.debug(f"[yt-dlp] extracted container/playlist, found {len(valid_entries)} entries")
                 return valid_entries
 
-            print(f"  [YT-DLP] Extracted single track details for: '{info.get('title', 'Unknown')}'")
+            logger.debug(f"[yt-dlp] extracted single track: '{info.get('title', 'Unknown')}'")
+            if not flat:
+                _log_extraction_result(info, context=f"'{info.get('title', query)}'")
             return [info]
 
     except yt_dlp.utils.DownloadError as e:
@@ -112,7 +184,7 @@ def _extract(query: str, is_search: bool, flat: bool = False) -> list[dict]:
         # is ever going to fix, so check for it first and bail out with
         # a distinct error before we waste time on the format fallback below
         if _is_age_restriction_error(err_str):
-            print(f"  [YT-DLP] Age-restricted video detected for '{query}', no sign-in available to bypass it.")
+            logger.warning(f"[yt-dlp] age-restricted video detected for '{query}', no sign-in available to bypass it")
             raise AgeRestrictedError(query) from e
 
         # Format unavailability slips through even with the client
@@ -122,7 +194,7 @@ def _extract(query: str, is_search: bool, flat: bool = False) -> list[dict]:
         # playable (even if it's not audio-only) than to fail the
         # whole /play command over a format quirk.
         if "Requested format is not available" in err_str:
-            print(f"  [YT-DLP] Format fallback triggered for '{query}', retrying with format='best'...")
+            logger.warning(f"[yt-dlp] format fallback triggered for '{query}', retrying with format='best'")
             fallback_opts = dict(opts)
             fallback_opts["format"] = "best"
             try:
@@ -133,21 +205,23 @@ def _extract(query: str, is_search: bool, flat: bool = False) -> list[dict]:
                         return []
                     if "entries" in info:
                         return [e for e in info["entries"] if e]
+                    if not flat:
+                        _log_extraction_result(info, context=f"'{info.get('title', query)}' (format fallback)")
                     return [info]
             except yt_dlp.utils.DownloadError as retry_err:
                 retry_err_str = str(retry_err)
                 if _is_age_restriction_error(retry_err_str):
-                    print(f"  [YT-DLP] Age-restricted video detected for '{query}' during format fallback.")
+                    logger.warning(f"[yt-dlp] age-restricted video detected for '{query}' during format fallback")
                     raise AgeRestrictedError(query) from retry_err
-                print(f"  [YT-DLP CRITICAL] Fallback extraction also failed for '{query}': {retry_err}")
+                logger.error(f"[yt-dlp] fallback extraction also failed for '{query}': {retry_err}")
                 raise
             except Exception as retry_err:
-                print(f"  [YT-DLP CRITICAL] Fallback extraction also failed for '{query}': {retry_err}")
+                logger.error(f"[yt-dlp] fallback extraction also failed for '{query}': {retry_err}")
                 raise
-        print(f"  [YT-DLP CRITICAL] Extraction failed for target '{query}': {e}")
+        logger.error(f"[yt-dlp] extraction failed for target '{query}': {e}")
         raise
     except Exception as e:
-        print(f"  [YT-DLP CRITICAL] Extraction failed for target '{query}': {e}")
+        logger.error(f"[yt-dlp] extraction failed for target '{query}': {e}")
         raise
 
 
@@ -192,20 +266,20 @@ async def search_or_resolve(query: str) -> list[Track]:
     is_search = not (query.startswith("http://") or query.startswith("https://"))
     loop = asyncio.get_event_loop()
 
-    print(f"[RESOLVER] Handing query off to thread pool executor...")
+    logger.debug(f"[resolver] handing query '{query}' off to thread pool executor")
     try:
         entries = await loop.run_in_executor(None, _extract, query, is_search, True)
     except AgeRestrictedError:
         raise
     except Exception as e:
-        print(f"[RESOLVER] Extraction failed entirely for '{query}': {e}")
+        logger.error(f"[resolver] extraction failed entirely for '{query}': {e}")
         return []
 
     tracks = []
     for entry in entries:
         webpage_url = entry.get("webpage_url") or entry.get("url") or query
         if not webpage_url:
-            print(f"[RESOLVER WARNING] Entry skipped; no usable web identifier found: {entry.get('title')}")
+            logger.warning(f"[resolver] entry skipped, no usable web identifier found: {entry.get('title')}")
             continue
 
         tracks.append(
@@ -222,18 +296,21 @@ async def search_or_resolve(query: str) -> list[Track]:
                 thumbnail=_thumbnail_from_entry(entry),
             )
         )
+    logger.info(f"[resolver] '{query}' resolved to {len(tracks)} track(s)")
     return tracks
 
 
-def _build_ffmpeg_source(stream_url: str, start_seconds: float = 0):
-    import discord
-
+def _build_ffmpeg_source(stream_url: str, start_seconds: float = 0, track_title: str = "unknown"):
     before_options = FFMPEG_OPTS["before_options"]
     if start_seconds > 0:
         before_options = f"-ss {start_seconds} {before_options}"
 
-    opts = {"before_options": before_options, "options": FFMPEG_OPTS["options"]}
-    return discord.FFmpegPCMAudio(stream_url, **opts)
+    return build_logged_ffmpeg_source(
+        stream_url,
+        before_options=before_options,
+        options=FFMPEG_OPTS["options"],
+        track_title=track_title,
+    )
 
 
 async def resolve_stream(track: Track) -> None:
@@ -250,13 +327,18 @@ async def resolve_stream(track: Track) -> None:
     skip calling this entirely, that's what get_playable_source checks
     for below.
     """
-    print(f"[PLAYER] Resolving stream URL for: '{track.title}'")
+    logger.info(f"[resolve] resolving stream url for: '{track.title}'")
+    started = time.time()
     loop = asyncio.get_event_loop()
     entries = await loop.run_in_executor(None, _extract, track.url, False)
     if not entries:
+        logger.error(f"[resolve] could not resolve stream for '{track.title}'")
         raise RuntimeError(f"Could not resolve stream for '{track.title}'")
 
     track.stream_url = entries[0]["url"]
+    track.stream_resolved_at = time.time()
+    logger.debug(f"[resolve] '{track.title}' resolved in {track.stream_resolved_at - started:.2f}s")
+    _log_stream_url_diagnostics(track.stream_url, track.title)
 
 
 async def get_playable_source(track: Track, start_seconds: float = 0):
@@ -269,7 +351,16 @@ async def get_playable_source(track: Track, start_seconds: float = 0):
     """
     if not track.stream_url:
         await resolve_stream(track)
-    return _build_ffmpeg_source(track.stream_url, start_seconds)
+    else:
+        age = time.time() - track.stream_resolved_at if track.stream_resolved_at else None
+        if age is not None:
+            logger.debug(f"[play] '{track.title}' reusing a stream url resolved {age:.1f}s ago")
+            if age > 300:
+                logger.warning(
+                    f"[play] '{track.title}' is about to play on a stream url that's "
+                    f"{age:.0f}s old, this is a plausible cause if it 403s"
+                )
+    return _build_ffmpeg_source(track.stream_url, start_seconds, track_title=track.title)
 
 
 def get_playable_source_from_cache(track: Track, start_seconds: float = 0):
@@ -279,8 +370,26 @@ def get_playable_source_from_cache(track: Track, start_seconds: float = 0):
     seeking, since the url was just refreshed moments ago and doesn't
     need to be looked up again. This is what keeps /seekforward and
     /seekback fast instead of hitting youtube on every nudge.
+
+    That said, "just refreshed moments ago" isn't guaranteed, if
+    someone seeks long after the track started, this is reusing
+    whatever url got resolved at track start (or prewarm time), and
+    that url can be old enough to have expired. Logging the age here
+    is the main lever we have for telling a stale-url 403 apart from
+    anything else when it happens on a seek specifically.
     """
-    return _build_ffmpeg_source(track.stream_url, start_seconds)
+    age = time.time() - track.stream_resolved_at if track.stream_resolved_at else None
+    if age is not None:
+        logger.debug(f"[seek] '{track.title}' seeking on a stream url resolved {age:.1f}s ago")
+        if age > 300:
+            logger.warning(
+                f"[seek] '{track.title}' is seeking on a stream url that's "
+                f"{age:.0f}s old, this is a plausible cause if it 403s"
+            )
+    else:
+        logger.debug(f"[seek] '{track.title}' has no recorded resolve time for its stream url")
+    return _build_ffmpeg_source(track.stream_url, start_seconds, track_title=track.title)
+
 
 import re
 
@@ -311,16 +420,17 @@ async def get_mix_tracks(seed_url: str, exclude_urls: set[str]) -> list[Track]:
     """
     video_id = extract_video_id(seed_url)
     if not video_id:
-        print(f"[autoplay] couldn't pull a video id out of seed url: {seed_url}")
+        logger.warning(f"[autoplay] couldn't pull a video id out of seed url: {seed_url}")
         return []
 
     mix_url = f"https://www.youtube.com/watch?v={video_id}&list=RD{video_id}"
+    logger.info(f"[autoplay] pulling mix for seed video id {video_id}")
     loop = asyncio.get_event_loop()
 
     try:
         entries = await loop.run_in_executor(None, _extract, mix_url, False, True)
     except Exception as e:
-        print(f"[autoplay] mix extraction failed for seed '{seed_url}': {e}")
+        logger.error(f"[autoplay] mix extraction failed for seed '{seed_url}': {e}")
         return []
 
     tracks = []
@@ -340,4 +450,5 @@ async def get_mix_tracks(seed_url: str, exclude_urls: set[str]) -> list[Track]:
                 source="youtube",
             )
         )
+    logger.info(f"[autoplay] mix for seed {video_id} yielded {len(tracks)} usable track(s) after filtering")
     return tracks

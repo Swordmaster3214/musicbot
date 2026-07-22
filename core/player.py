@@ -13,6 +13,9 @@ from core.queue_manager import GuildQueue
 from sources.youtube import Track
 import sources.youtube as youtube_source
 import sources.direct as direct_source
+from utils.logger import get_logger
+
+logger = get_logger(__name__)
 
 
 class GuildPlayer:
@@ -69,23 +72,75 @@ class GuildPlayer:
         return self.voice_client is not None and self.voice_client.is_connected()
 
     async def connect(self, channel: discord.VoiceChannel):
+        """
+        Connects to (or moves to, or reuses an existing connection to)
+        the given channel.
+
+        The logging in here is specifically to chase down the "bot
+        thinks it's already in a channel when it isn't" issue. The
+        root of that class of bug is almost always
+        channel.guild.voice_client: discord.py hands back whatever
+        VoiceClient object it still has on record for the guild, and
+        that object can be stale (its gateway session died, or it was
+        never properly cleaned up after a disconnect) without
+        is_connected() necessarily telling the full story right away.
+        Logging the before/after state on every connect attempt is
+        what lets us actually see that mismatch happen next time,
+        instead of just hearing "the bot said it was already
+        connected but it wasn't" secondhand.
+        """
         async with self._connect_lock:
             guild_vc = channel.guild.voice_client
+            logger.debug(
+                f"[connect] guild={channel.guild.id} requested_channel={channel.id} "
+                f"discord.py's guild.voice_client={guild_vc!r} "
+                f"(connected={guild_vc.is_connected() if guild_vc else None}, "
+                f"channel={getattr(guild_vc, 'channel', None)}) "
+                f"our_tracked_voice_client={self.voice_client!r}"
+            )
+
             if guild_vc and guild_vc.is_connected():
+                logger.info(
+                    f"[connect] guild {channel.guild.id}: reusing existing voice "
+                    f"connection (currently in {guild_vc.channel})"
+                )
                 self.voice_client = guild_vc
                 if self.voice_client.channel != channel:
+                    logger.info(
+                        f"[connect] guild {channel.guild.id}: moving from "
+                        f"{self.voice_client.channel} to {channel}"
+                    )
                     await self.voice_client.move_to(channel)
             else:
+                if guild_vc is not None:
+                    logger.warning(
+                        f"[connect] guild {channel.guild.id}: discord.py still had a "
+                        f"voice client on record ({guild_vc!r}) but is_connected() was "
+                        f"False, treating it as stale and reconnecting fresh instead "
+                        f"of trusting it"
+                    )
+                logger.info(f"[connect] guild {channel.guild.id}: opening a fresh voice connection to {channel}")
                 self.voice_client = await channel.connect()
 
-            # self deafen so the bot isn't pointlessly receiving audio it
-            # never listens to. this is just our own voice state, it
-            # doesn't need any special server permission to set.
             await channel.guild.change_voice_state(channel=channel, self_deaf=True)
+            logger.debug(
+                f"[connect] guild {channel.guild.id}: connect() finished, "
+                f"voice_client={self.voice_client!r} connected={self.is_connected()}"
+            )
 
     async def disconnect(self):
+        logger.info(
+            f"[disconnect] guild {self.guild_id}: disconnect requested, "
+            f"current voice_client={self.voice_client!r}"
+        )
         if self.voice_client and self.voice_client.is_connected():
             await self.voice_client.disconnect()
+            logger.info(f"[disconnect] guild {self.guild_id}: disconnected cleanly")
+        else:
+            logger.warning(
+                f"[disconnect] guild {self.guild_id}: disconnect() called but "
+                f"voice_client was already None or not connected, nothing to do"
+            )
         self.voice_client = None
 
     def current_position(self) -> float:
@@ -110,16 +165,20 @@ class GuildPlayer:
         """
         async with self._playback_lock:
             if self.voice_client and (self.voice_client.is_playing() or self.voice_client.is_paused()):
+                logger.debug(f"[play_next] guild {self.guild_id}: already playing/paused, backing off")
                 return
 
             track = self.queue.next(ignore_loop=ignore_loop)
+            logger.debug(f"[play_next] guild {self.guild_id}: queue.next() -> {track.title if track else None}")
 
             try:
                 if track is None and self.queue.autoplay:
+                    logger.info(f"[play_next] guild {self.guild_id}: queue is empty, autoplay is on, pulling a mix track")
                     self._resolve_task = asyncio.ensure_future(self._pull_autoplay_track())
                     track = await self._resolve_task
 
                 if track is None:
+                    logger.debug(f"[play_next] guild {self.guild_id}: nothing to play, staying idle")
                     return  # queue's empty and autoplay is off (or came up dry), just sit idle
 
                 # if the prewarm step already resolved this exact track,
@@ -127,18 +186,37 @@ class GuildPlayer:
                 # skip straight to building the ffmpeg source instead of
                 # doing the lookup all over again
                 source_module = direct_source if track.source == "direct" else youtube_source
+                logger.info(f"[play_next] guild {self.guild_id}: resolving playable source for '{track.title}'")
+                started = time.time()
                 self._resolve_task = asyncio.ensure_future(source_module.get_playable_source(track))
                 audio_source = await self._resolve_task
+                logger.debug(
+                    f"[play_next] guild {self.guild_id}: source ready for '{track.title}' "
+                    f"in {time.time() - started:.2f}s"
+                )
             except asyncio.CancelledError:
                 # stop_and_clear cancelled us mid-lookup, bail out quietly
                 # instead of starting a track nobody asked for anymore
+                logger.debug(f"[play_next] guild {self.guild_id}: resolution cancelled, likely a stop mid-lookup")
                 return
+            except Exception as e:
+                logger.error(f"[play_next] guild {self.guild_id}: failed to resolve source for '{track.title}': {e}")
+                raise
             finally:
                 self._resolve_task = None
+
+            if not self.voice_client or not self.voice_client.is_connected():
+                logger.error(
+                    f"[play_next] guild {self.guild_id}: about to play '{track.title}' but "
+                    f"voice_client is {self.voice_client!r} (connected="
+                    f"{self.voice_client.is_connected() if self.voice_client else None}), "
+                    f"this will likely fail"
+                )
 
             self.voice_client.play(audio_source, after=self._make_after_callback())
             self._position_accum = 0.0
             self._segment_start = time.time()
+            logger.info(f"[play_next] guild {self.guild_id}: now playing '{track.title}'")
             self.schedule_prewarm()
 
         if self.on_track_start:
@@ -154,6 +232,7 @@ class GuildPlayer:
         # If the queue is empty, ensure any running prewarm task is cleaned up
         if not self.queue.upcoming:
             if self._prewarm_task is not None and not self._prewarm_task.done():
+                logger.debug(f"[prewarm] guild {self.guild_id}: queue emptied, cancelling in-flight prewarm")
                 self._prewarm_task.cancel()
             self._prewarm_track = None
             return
@@ -173,20 +252,28 @@ class GuildPlayer:
             if self._prewarm_track == next_track:
                 return
             # Otherwise, the track at the top of the queue changed, so cancel the stale task
+            logger.debug(
+                f"[prewarm] guild {self.guild_id}: next-up track changed to "
+                f"'{next_track.title}', cancelling stale prewarm for "
+                f"'{self._prewarm_track.title if self._prewarm_track else None}'"
+            )
             self._prewarm_task.cancel()
 
+        logger.debug(f"[prewarm] guild {self.guild_id}: scheduling prewarm for '{next_track.title}'")
         self._prewarm_track = next_track
         self._prewarm_task = asyncio.ensure_future(self._prewarm(next_track))
 
     async def _prewarm(self, track: Track):
         try:
+            started = time.time()
             await youtube_source.resolve_stream(track)
+            logger.debug(f"[prewarm] guild {self.guild_id}: '{track.title}' prewarmed in {time.time() - started:.2f}s")
         except asyncio.CancelledError:
             raise
         except Exception as e:
             # not fatal, play_next just resolves it the normal way when
             # this track's turn actually comes up
-            print(f"[player] prewarm failed for '{track.title}': {e}")
+            logger.warning(f"[prewarm] guild {self.guild_id}: prewarm failed for '{track.title}': {e}")
 
     async def _pull_autoplay_track(self) -> Optional[Track]:
         """
@@ -198,6 +285,7 @@ class GuildPlayer:
         seed for the next pull, so the chain just keeps going.
         """
         if not self.queue.history:
+            logger.debug(f"[autoplay] guild {self.guild_id}: nothing's ever played, no seed to work from")
             return None  # nothing's ever played, no seed to work from
 
         seed = self.queue.history[-1]
@@ -207,10 +295,11 @@ class GuildPlayer:
 
         mix_tracks = await youtube_source.get_mix_tracks(seed.url, already_played)
         if not mix_tracks:
-            print(f"[autoplay] mix came back empty for seed '{seed.title}', giving up for now")
+            logger.warning(f"[autoplay] guild {self.guild_id}: mix came back empty for seed '{seed.title}', giving up for now")
             return None
 
         self.queue.add_many(mix_tracks)
+        logger.info(f"[autoplay] guild {self.guild_id}: added {len(mix_tracks)} mix track(s) seeded from '{seed.title}'")
         return self.queue.next()
 
     def _make_after_callback(self):
@@ -221,9 +310,10 @@ class GuildPlayer:
         """
         def _after_playback(error):
             if error:
-                print(f"[player] playback error: {error}")
+                logger.error(f"[player] guild {self.guild_id}: playback error reported by discord.py: {error}")
 
             if self._suppress_auto_advance:
+                logger.debug(f"[player] guild {self.guild_id}: after-callback fired but auto-advance is suppressed (manual seek)")
                 self._suppress_auto_advance = False
                 return
 
@@ -236,7 +326,7 @@ class GuildPlayer:
             try:
                 fut.result()
             except Exception as e:
-                print(f"[player] error advancing queue: {e}")
+                logger.error(f"[player] guild {self.guild_id}: error advancing queue: {e}")
 
         return _after_playback
 
@@ -247,6 +337,7 @@ class GuildPlayer:
             # stops ticking until resume() starts a new segment
             self._position_accum = self.current_position()
             self._segment_start = None
+            logger.debug(f"[player] guild {self.guild_id}: paused at {self._position_accum:.1f}s")
             return True
         return False
 
@@ -254,6 +345,7 @@ class GuildPlayer:
         if self.voice_client and self.voice_client.is_paused():
             self.voice_client.resume()
             self._segment_start = time.time()
+            logger.debug(f"[player] guild {self.guild_id}: resumed from {self._position_accum:.1f}s")
             return True
         return False
 
@@ -280,14 +372,17 @@ class GuildPlayer:
         never starts playback on its own, but no reason to let it keep
         burning a yt-dlp round trip against a queue that just got wiped.
         """
+        logger.info(f"[player] guild {self.guild_id}: stop_and_clear requested")
         self._force_ignore_loop = True
         self.queue.loop_current = False
         self.queue.loop_queue = False
 
         if self._resolve_task is not None and not self._resolve_task.done():
+            logger.debug(f"[player] guild {self.guild_id}: cancelling in-flight resolve task")
             self._resolve_task.cancel()
 
         if self._prewarm_task is not None and not self._prewarm_task.done():
+            logger.debug(f"[player] guild {self.guild_id}: cancelling in-flight prewarm task")
             self._prewarm_task.cancel()
 
         if self.voice_client and (self.voice_client.is_playing() or self.voice_client.is_paused()):
@@ -303,6 +398,7 @@ class GuildPlayer:
         looped track still rolls back around to the start of history
         like normal.
         """
+        logger.info(f"[player] guild {self.guild_id}: skip requested")
         if self.voice_client and (self.voice_client.is_playing() or self.voice_client.is_paused()):
             self._force_ignore_loop = True
             self.voice_client.stop()
@@ -322,6 +418,7 @@ class GuildPlayer:
         """
         track = self.queue.current
         if track is None or self.voice_client is None:
+            logger.debug(f"[seek] guild {self.guild_id}: seek requested but nothing is playing")
             return
 
         new_position = self.current_position() + delta
@@ -329,6 +426,8 @@ class GuildPlayer:
         if track.duration_seconds:
             # leave a one second buffer so we don't seek right past the end
             new_position = min(new_position, max(track.duration_seconds - 1, 0))
+
+        logger.info(f"[seek] guild {self.guild_id}: seeking '{track.title}' by {delta:+.0f}s to {new_position:.1f}s")
 
         if self.voice_client.is_playing() or self.voice_client.is_paused():
             self._suppress_auto_advance = True
@@ -358,6 +457,7 @@ class PlayerManager:
 
     def get(self, guild_id: int) -> GuildPlayer:
         if guild_id not in self._players:
+            logger.debug(f"[player_manager] creating new GuildPlayer for guild {guild_id}")
             queue = self.queue_manager.get(guild_id)
             self._players[guild_id] = GuildPlayer(guild_id, queue, self.bot)
         return self._players[guild_id]

@@ -119,6 +119,25 @@ class GuildPlayer:
                         f"False, treating it as stale and reconnecting fresh instead "
                         f"of trusting it"
                     )
+                    # is_connected() being False doesn't mean discord.py has
+                    # forgotten about this voice client. it keeps its own
+                    # entry in a per-guild registry, and channel.connect()
+                    # checks that registry, not is_connected(), before it
+                    # lets a new connection through. so just dropping our
+                    # own reference to guild_vc here isn't enough, discord.py
+                    # still thinks the guild is occupied and connect() raises
+                    # "Already connected to a voice channel." force-disconnecting
+                    # the stale client clears that internal entry first, so
+                    # the fresh connect below actually goes through instead
+                    # of tripping over a connection nobody's using anymore.
+                    try:
+                        await guild_vc.disconnect(force=True)
+                    except Exception as e:
+                        logger.warning(
+                            f"[connect] guild {channel.guild.id}: force-disconnecting "
+                            f"the stale voice client raised {e!r}, trying the fresh "
+                            f"connect anyway"
+                        )
                 logger.info(f"[connect] guild {channel.guild.id}: opening a fresh voice connection to {channel}")
                 self.voice_client = await channel.connect()
 

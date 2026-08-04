@@ -62,6 +62,7 @@ STRINGS = {
         "embed_queue_title": "Queue",
         "embed_queue_empty": "The queue is empty.",
         "embed_queue_footer": "{count} track(s) total, page {page}",
+        "embed_progress_label": "Progress",
         "source_direct": "Direct Link",
 
         # now playing view button labels
@@ -97,6 +98,11 @@ STRINGS = {
         "vote_already_decided": "This vote is already over.",
         "vote_cast_confirm": "Your vote's been counted. ({count}/{threshold})",
         "vote_in_progress": "A vote's already running in this channel. Wait for it to finish before starting one for **{action}**.",
+
+        # voice channel leave handling
+        "user_left_queue_cleared": "{user} left the voice channel — removed {count} of their queued track(s).",
+        "user_left_current_skipped": "{user} left the voice channel while their track was playing, skipping it.",
+        "bot_left_alone": "Everyone left the voice channel, so I disconnected and cleared the queue.",
 
         # action labels, used inside vote prompts
         "action_pause": "pause playback",
@@ -166,6 +172,7 @@ STRINGS = {
         "embed_queue_title": "Cola",
         "embed_queue_empty": "La cola está vacía.",
         "embed_queue_footer": "{count} canción(es) en total, página {page}",
+        "embed_progress_label": "Progreso",
         "source_direct": "Enlace directo",
 
         # now playing view button labels
@@ -200,6 +207,11 @@ STRINGS = {
         "vote_already_decided": "Esta votación ya terminó.",
         "vote_cast_confirm": "Tu voto fue contado. ({count}/{threshold})",
         "vote_in_progress": "Ya hay una votación en curso en este canal. Espera a que termine antes de iniciar una para **{action}**.",
+
+        # voice channel leave handling
+        "user_left_queue_cleared": "{user} salió del canal de voz — se eliminaron {count} canción(es) suya(s) de la cola.",
+        "user_left_current_skipped": "{user} salió del canal de voz mientras sonaba su canción, saltándola.",
+        "bot_left_alone": "Todos salieron del canal de voz, así que me desconecté y vacié la cola.",
 
         # action labels, used inside vote prompts
         "action_pause": "pausar la reproducción",

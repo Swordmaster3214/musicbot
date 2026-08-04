@@ -6,6 +6,8 @@ Both embed builders take a lang code so the caller can hand them
 whatever the current guild's language setting is, they default to
 english so anything that forgets to pass it still works fine.
 """
+from typing import Optional
+
 import discord
 from sources.youtube import Track
 from i18n.strings import t
@@ -41,6 +43,27 @@ def format_duration(seconds: int, lang: str = "en") -> str:
     return f"{minutes}:{secs:02d}"
 
 
+def _progress_bar(current_seconds: float, total_seconds: Optional[int], length: int = 20) -> str:
+    """
+    Builds a plain text progress bar out of filled/unfilled block
+    characters. Text based on purpose, an embed field can't host a
+    real progress widget, and a row of unicode blocks reads fine in
+    Discord's default font without needing an image or a custom emoji.
+
+    Returns an empty string if we don't have a total to measure
+    against (livestreams, or anything yt-dlp couldn't get a duration
+    for), since a bar with no end point doesn't mean anything.
+    """
+    if not total_seconds or total_seconds <= 0:
+        return ""
+
+    ratio = current_seconds / total_seconds
+    ratio = min(max(ratio, 0.0), 1.0)  # clamp, position tracking can nudge slightly past the end near a track's finish
+
+    filled = int(length * ratio)
+    return "█" * filled + "▬" * (length - filled)
+
+
 def _source_label(source: str, lang: str) -> str:
     # direct links get an actual translated label, youtube and spotify
     # are proper nouns so there's nothing to translate there
@@ -49,7 +72,15 @@ def _source_label(source: str, lang: str) -> str:
     return source.capitalize()
 
 
-def now_playing_embed(track: Track, lang: str = "en") -> discord.Embed:
+def now_playing_embed(track: Track, lang: str = "en", current_seconds: Optional[float] = None) -> discord.Embed:
+    """
+    current_seconds is optional so every existing caller that doesn't
+    care about live position keeps working unchanged. Pass it (usually
+    from GuildPlayer.current_position()) to get an elapsed/total line
+    plus a progress bar tacked onto the embed. Left out entirely for
+    tracks with no known duration, since there's nothing meaningful to
+    show a bar against.
+    """
     embed = discord.Embed(
         title=t("embed_now_playing_title", lang),
         description=f"**{escape_title(track.title)}**",
@@ -59,6 +90,17 @@ def now_playing_embed(track: Track, lang: str = "en") -> discord.Embed:
         embed.add_field(name=t("embed_artist", lang), value=escape_title(track.artist), inline=True)
     embed.add_field(name=t("embed_duration", lang), value=format_duration(track.duration_seconds, lang), inline=True)
     embed.add_field(name=t("embed_source", lang), value=_source_label(track.source, lang), inline=True)
+
+    if current_seconds is not None and track.duration_seconds:
+        bar = _progress_bar(current_seconds, track.duration_seconds)
+        elapsed = format_duration(current_seconds, lang)
+        total = format_duration(track.duration_seconds, lang)
+        embed.add_field(
+            name=t("embed_progress_label", lang),
+            value=f"`{elapsed} / {total}`\n{bar}",
+            inline=False,
+        )
+
     if track.thumbnail:
         embed.set_thumbnail(url=track.thumbnail)
     return embed

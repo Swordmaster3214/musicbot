@@ -24,6 +24,15 @@ MAX_QUEUE_SIZE = int(os.getenv("MAX_QUEUE_SIZE", "0"))
 # how many results to grab when searching youtube for a spotify track match
 SPOTIFY_MATCH_SEARCH_DEPTH = int(os.getenv("SPOTIFY_MATCH_SEARCH_DEPTH", "5"))
 
+# how often (seconds) the now-playing embed gets its progress bar/elapsed
+# time refreshed while a track is actively playing. This runs as one
+# single background loop that checks every guild each tick rather than
+# a task per guild, and it skips anything paused or with no known
+# duration, so raising the guild count doesn't multiply the request
+# rate the way a per-guild timer would. 15s is a reasonable balance
+# between "looks live" and not leaning on Discord's edit rate limits.
+NOWPLAYING_UPDATE_INTERVAL_SECONDS = int(os.getenv("NOWPLAYING_UPDATE_INTERVAL_SECONDS", "15"))
+
 # discord user ids that skip the playback vote entirely, comma separated.
 # this is a plain env var on purpose, so changing who's on the list means
 # editing .env and restarting the bot rather than adding another admin
@@ -42,5 +51,6 @@ if not DISCORD_TOKEN:
 logger.info(
     f"[config] loaded: db_path={DB_PATH} max_queue_size={MAX_QUEUE_SIZE or 'unlimited'} "
     f"spotify_configured={bool(SPOTIFY_CLIENT_ID)} vote_bypass_count={len(VOTE_BYPASS_USER_IDS)} "
+    f"nowplaying_update_interval={NOWPLAYING_UPDATE_INTERVAL_SECONDS}s "
     f"log_level={os.getenv('MUSICBOT_LOG_LEVEL', 'INFO').upper()}"
 )

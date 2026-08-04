@@ -97,6 +97,24 @@ class GuildQueue:
         logger.debug(f"[queue] remove_at({index}) out of range, upcoming has {len(self.upcoming)}")
         return None
 
+    def remove_by_user(self, user_id: int) -> list[Track]:
+        """
+        Pulls every upcoming track requested by user_id out of the
+        queue, leaving unclaimed tracks (requested_by is None, e.g.
+        pulled in by autoplay) and everyone else's tracks right where
+        they were. Used when someone leaves voice mid-session, so an
+        abandoned playlist doesn't sit there forcing a vote on whoever
+        is still around just to get past it.
+        """
+        removed = [t for t in self.upcoming if t.requested_by == user_id]
+        if removed:
+            self.upcoming = [t for t in self.upcoming if t.requested_by != user_id]
+            logger.debug(
+                f"[queue] removed {len(removed)} track(s) belonging to user {user_id}, "
+                f"{len(self.upcoming)} left upcoming"
+            )
+        return removed
+
     def __len__(self):
         return len(self.upcoming)
 

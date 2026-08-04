@@ -9,7 +9,7 @@ from typing import Optional
 
 import discord
 from discord import app_commands
-from discord.ext import commands
+from discord.ext import commands, tasks
 
 import config
 from core.queue_manager import QueueManager
@@ -164,6 +164,62 @@ class Music(commands.Cog):
         self.now_playing_messages: dict[int, discord.Message] = {}
         self.now_playing_channels: dict[int, discord.abc.Messageable] = {}
 
+        self._progress_updater.start()
+
+    def cog_unload(self):
+        self._progress_updater.cancel()
+
+    # ---------- live progress ----------
+
+    @tasks.loop(seconds=config.NOWPLAYING_UPDATE_INTERVAL_SECONDS)
+    async def _progress_updater(self):
+        """
+        Single loop shared by every guild rather than one task per
+        guild, that's what keeps this from scaling request volume
+        linearly with server count. Each tick walks the guilds that
+        currently have a now-playing message on screen and, if
+        something's actually playing right now (not paused, not
+        idle) and has a known duration, edits that one message with
+        the current elapsed time and a progress bar.
+
+        Paused tracks are skipped on purpose, an unmoving bar doesn't
+        need to keep re-sending, and it avoids fighting the separate
+        "Paused." message that already told everyone what happened.
+        Anything with no known duration (a livestream, or a track
+        whose metadata didn't include one) is skipped too, since
+        there's no total to measure progress against.
+        """
+        for guild_id, message in list(self.now_playing_messages.items()):
+            try:
+                player = self.player_manager.get(guild_id)
+                queue = self.queue_manager.get(guild_id)
+
+                if queue.current is None:
+                    continue
+                if not player.voice_client or not player.voice_client.is_playing():
+                    continue
+                if not queue.current.duration_seconds:
+                    continue
+
+                lang = self._lang(guild_id)
+                embed = now_playing_embed(queue.current, lang=lang, current_seconds=player.current_position())
+                view = NowPlayingView(self, guild_id, lang=lang)
+
+                await message.edit(embed=embed, view=view)
+            except discord.NotFound:
+                # message got deleted out from under us, stop trying
+                # to update it until something posts a fresh one
+                logger.debug(f"[progress] guild {guild_id}: now playing message was deleted, dropping it from tracking")
+                self.now_playing_messages.pop(guild_id, None)
+            except discord.HTTPException as e:
+                logger.debug(f"[progress] guild {guild_id}: failed to edit progress, will retry next tick: {e}")
+            except Exception as e:
+                logger.warning(f"[progress] guild {guild_id}: unexpected error updating progress: {e}")
+
+    @_progress_updater.before_loop
+    async def _before_progress_updater(self):
+        await self.bot.wait_until_ready()
+
     # ---------- helpers ----------
 
     def _lang(self, guild_id: int) -> str:
@@ -284,7 +340,8 @@ class Music(commands.Cog):
             return
 
         lang = self._lang(guild_id)
-        embed = now_playing_embed(track, lang=lang)
+        player = self.player_manager.get(guild_id)
+        embed = now_playing_embed(track, lang=lang, current_seconds=player.current_position())
         view = NowPlayingView(self, guild_id, lang=lang)
 
         existing = self.now_playing_messages.get(guild_id)
@@ -333,6 +390,102 @@ class Music(commands.Cog):
             player.schedule_prewarm()
         else:
             await player.play_next()
+
+    # ---------- voice channel leave handling ----------
+
+    @commands.Cog.listener()
+    async def on_voice_state_update(self, member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
+        """
+        Handles two related problems whenever a real person leaves a
+        voice channel the bot is sitting in:
+
+        1. If they queued a big playlist and then wandered off, their
+           unplayed tracks stay in the queue forever, forcing everyone
+           who's still around through a vote just to skip past a song
+           nobody there actually asked for. So we strip out anything
+           still upcoming that they requested, and if the track
+           playing right now was theirs, we skip it too.
+        2. If that departure leaves the channel with no humans left in
+           it at all, there's no point sitting there alone burning
+           cpu and a voice connection on an empty room, so the bot
+           stops, clears the queue, and disconnects.
+
+           Autoplay is the one exception to that second point. If
+           autoplay's on, the bot staying in an empty channel is the
+           whole point of the feature, someone can start a session,
+           step away, and come back to still hear music instead of
+           finding the bot gone. So an empty room with autoplay on
+           just leaves everything running as-is.
+
+        Only channel changes matter here (leaving entirely, moving to
+        a different channel), not things like a mute/deafen toggle
+        that fire this same event without actually changing which
+        channel someone's in.
+        """
+        if member.bot:
+            return
+        if before.channel is None or before.channel == after.channel:
+            return
+
+        guild_id = member.guild.id
+        player = self.player_manager.get(guild_id)
+
+        if not player.voice_client or player.voice_client.channel != before.channel:
+            # they left some channel, but it wasn't the one we're in
+            return
+
+        lang = self._lang(guild_id)
+        channel = self.now_playing_channels.get(guild_id)
+        remaining_humans = [m for m in before.channel.members if not m.bot]
+        queue = self.queue_manager.get(guild_id)
+
+        if not remaining_humans:
+            if queue.autoplay:
+                logger.info(
+                    f"[voice_state] guild {guild_id}: voice channel emptied after {member} left, "
+                    f"but autoplay is on so staying connected"
+                )
+                # autoplay is meant to keep the bot going with no one
+                # around, so no disconnect and no point stripping the
+                # leaver's queued tracks or skipping their current
+                # track either, nobody's left to be inconvenienced by
+                # either of those and a vote can't even fire with zero
+                # eligible voters in the channel anyway
+                return
+
+            logger.info(f"[voice_state] guild {guild_id}: voice channel emptied after {member} left, disconnecting")
+            await player.stop_and_clear()
+            await player.disconnect()
+            self.queue_manager.reset(guild_id)
+            self.now_playing_messages.pop(guild_id, None)
+            self.now_playing_channels.pop(guild_id, None)
+            if channel:
+                try:
+                    await channel.send(t("bot_left_alone", lang))
+                except discord.HTTPException as e:
+                    logger.debug(f"[voice_state] guild {guild_id}: failed to send alone-disconnect notice: {e}")
+            return
+
+        removed = queue.remove_by_user(member.id)
+        current_owned = queue.current is not None and queue.current.requested_by == member.id
+
+        if removed:
+            player.schedule_prewarm()
+            logger.info(f"[voice_state] guild {guild_id}: {member} left, removed {len(removed)} of their queued track(s)")
+            if channel:
+                try:
+                    await channel.send(t("user_left_queue_cleared", lang, user=member.display_name, count=len(removed)))
+                except discord.HTTPException as e:
+                    logger.debug(f"[voice_state] guild {guild_id}: failed to send queue-cleared notice: {e}")
+
+        if current_owned:
+            logger.info(f"[voice_state] guild {guild_id}: {member} left while owning the current track, skipping it")
+            if channel:
+                try:
+                    await channel.send(t("user_left_current_skipped", lang, user=member.display_name))
+                except discord.HTTPException as e:
+                    logger.debug(f"[voice_state] guild {guild_id}: failed to send skip notice: {e}")
+            await player.skip()
 
     # ---------- play / queue commands ----------
 
@@ -607,7 +760,8 @@ class Music(commands.Cog):
             return
 
         guild_id = interaction.guild_id
-        embed = now_playing_embed(queue.current, lang=lang)
+        player = self.player_manager.get(guild_id)
+        embed = now_playing_embed(queue.current, lang=lang, current_seconds=player.current_position())
         view = NowPlayingView(self, interaction.guild_id, lang=lang)
 
         self.now_playing_channels[guild_id] = interaction.channel
@@ -619,10 +773,11 @@ class Music(commands.Cog):
         # and editing that goes through the interaction's own webhook
         # instead of a normal channel message edit. that webhook token
         # only lasts about 15 minutes, so if we hang onto this object and
-        # edit it later from _on_track_start, it works fine for a while
-        # and then starts throwing 401 Invalid Webhook Token once the
-        # token expires. re-fetching it as a plain channel message here
-        # detaches it from the interaction so it can be edited indefinitely.
+        # edit it later from _on_track_start (or now from the progress
+        # loop), it works fine for a while and then starts throwing 401
+        # Invalid Webhook Token once the token expires. re-fetching it as
+        # a plain channel message here detaches it from the interaction
+        # so it can be edited indefinitely.
         message = await interaction.channel.fetch_message(message.id)
 
         self.now_playing_messages[guild_id] = message

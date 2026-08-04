@@ -220,3 +220,4 @@ __marimo__/
 
 # Database files
 *.sqlite3
+musicbot.service

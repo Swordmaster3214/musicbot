@@ -9,27 +9,24 @@ re-search.
 
 1. Install system dependencies:
    ```bash
-   sudo pacman -S python python-pip ffmpeg
+   sudo pacman -S python ffmpeg uv
    ```
 
 2. Clone/extract the project, then set up a virtual environment:
    ```bash
    cd musicbot
-   python -m venv venv
-   source venv/bin/activate
-   pip install -r requirements.txt
+   uv sync
    ```
 
 3. Copy the env template and fill in your credentials:
    ```bash
    cp .env.example .env
    ```
-   - `DISCORD_TOKEN`: from the [Discord Developer Portal](https://discord.com/developers/applications). Make sure the bot has the `applications.commands` and `bot` scopes, and the `Server Members` + `Message Content` privileged intents enabled.
-   - `SPOTIFY_CLIENT_ID` / `SPOTIFY_CLIENT_SECRET`: from the [Spotify Developer Dashboard](https://developer.spotify.com/dashboard). Only needed if you want Spotify link support.
+   - `DISCORD_TOKEN`: from the [Discord Developer Portal](https://discord.com/developers/applications). Make sure the bot has the `applications.commands` and `bot` scopes. No privileged intents are currently required.
 
 4. Run it:
    ```bash
-   python bot.py
+   uv run bot.py
    ```
 
 Slash commands sync automatically on startup (can take up to an hour to
@@ -92,18 +89,3 @@ musicbot/
 │   └── cache.py               sqlite title/link cache + guild settings
 └── utils/helpers.py           embeds, formatting
 ```
-
-## Notes on the cache
-
-Per design, a song only gets written to the cache when real metadata
-is available: YouTube/Spotify resolved tracks always have a title, and
-direct file links only get cached if the file actually has embedded
-tags (artist or duration). Untagged direct links still play fine, they
-just won't show up in `/findcached`.
-
-## Ideas for later (not yet implemented)
-
-- Volume control
-- Per-user favorites/playlists saved across sessions
-- Web dashboard for queue management outside of Discord
-- Additional languages beyond English/Spanish

@@ -1,0 +1,19 @@
+[Unit]
+Description=Discord music bot
+After=network-online.target bgutil-ytdlp-pot-provider.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=your user here
+WorkingDirectory=your install directory here
+# uv run finds the venv from uv.lock/pyproject.toml on its own, no
+# activation step needed and no risk of the unit picking up whatever
+# python happens to be on $PATH for the daniel user at boot time
+ExecStart=/path/to/uv run bot.py
+Restart=on-failure
+RestartSec=5
+EnvironmentFile=/path/to/.env
+
+[Install]
+WantedBy=multi-user.target

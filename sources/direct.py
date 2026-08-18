@@ -91,7 +91,7 @@ def has_metadata(track: Track) -> bool:
     return track.artist is not None or track.duration_seconds is not None
 
 
-async def get_playable_source(track: Track, start_seconds: float = 0):
+async def get_playable_source(track: Track, start_seconds: float = 0, on_forbidden=None):
     before_options = FFMPEG_OPTS["before_options"]
     if start_seconds > 0:
         before_options = f"-ss {start_seconds} {before_options}"
@@ -102,4 +102,5 @@ async def get_playable_source(track: Track, start_seconds: float = 0):
         before_options=before_options,
         options=FFMPEG_OPTS["options"],
         track_title=track.title,
+        on_forbidden=on_forbidden,
     )

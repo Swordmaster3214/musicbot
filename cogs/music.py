@@ -322,10 +322,40 @@ class Music(commands.Cog):
         await player.connect(interaction.user.voice.channel)
 
         # remember where to post/update the now playing message, and
-        # hook up the callback so the player can drive that update
+        # hook up the callbacks so the player can drive that update
+        # and let us know if a track dies on the way
         self.now_playing_channels[guild_id] = interaction.channel
         player.on_track_start = lambda track, gid=guild_id: self._on_track_start(gid, track)
+        player.on_stream_error = lambda track, reason, gid=guild_id: self._on_stream_error(gid, track, reason)
         return True
+
+    async def _on_stream_error(self, guild_id: int, track, reason: str):
+        """
+        Fired by the player whenever a track can't be played, either
+        because it failed to resolve up front (age restriction, a
+        persistent 403, or youtube's rate limit wall) or because it
+        started playing fine and then got cut off by a 403 partway
+        through. Posts a heads up in the now playing channel so this
+        doesn't just look like the bot silently skipping songs for no
+        reason, since the player already moves on to the next track
+        on its own either way.
+        """
+        channel = self.now_playing_channels.get(guild_id)
+        if channel is None:
+            logger.debug(f"[stream_error] guild {guild_id}: no channel on record, can't notify about '{track.title}'")
+            return
+
+        lang = self._lang(guild_id)
+        key = {
+            "age_restricted": "err_track_age_restricted",
+            "rate_limited": "err_track_rate_limited",
+            "forbidden": "err_track_forbidden",
+        }.get(reason, "err_track_unavailable")
+
+        try:
+            await channel.send(t(key, lang, title=escape_title(track.title)))
+        except discord.HTTPException as e:
+            logger.debug(f"[stream_error] guild {guild_id}: failed to send stream error notice: {e}")
 
     async def _on_track_start(self, guild_id: int, track):
         """
@@ -540,6 +570,12 @@ class Music(commands.Cog):
             # without a signed-in, age-verified account
             logger.warning(f"[play] age-restricted video blocked the request for query: '{query}'")
             await interaction.followup.send(t("err_age_restricted", lang))
+        except youtube_source.RateLimitedError:
+            logger.warning(f"[play] rate limited by youtube resolving query: '{query}'")
+            await interaction.followup.send(t("err_rate_limited", lang))
+        except youtube_source.StreamUnavailableError:
+            logger.warning(f"[play] could not resolve a working stream for query: '{query}'")
+            await interaction.followup.send(t("err_stream_unavailable", lang))
         except Exception as e:
             logger.exception(f"[play] exception in /play execution chain for query '{query}': {e}")
 
@@ -601,6 +637,12 @@ class Music(commands.Cog):
         except youtube_source.AgeRestrictedError:
             logger.warning(f"[shuffleplay] age-restricted video blocked the request for query: '{query}'")
             await interaction.followup.send(t("err_age_restricted", lang))
+        except youtube_source.RateLimitedError:
+            logger.warning(f"[shuffleplay] rate limited by youtube resolving query: '{query}'")
+            await interaction.followup.send(t("err_rate_limited", lang))
+        except youtube_source.StreamUnavailableError:
+            logger.warning(f"[shuffleplay] could not resolve a working stream for query: '{query}'")
+            await interaction.followup.send(t("err_stream_unavailable", lang))
         except Exception as e:
             logger.exception(f"[shuffleplay] exception in /shuffleplay execution chain for query '{query}': {e}")
             try:

@@ -17,6 +17,17 @@ from utils.logger import get_logger
 
 logger = get_logger(__name__)
 
+# how a failed track gets described to the cog, which turns it into an
+# actual user-facing message. kept as plain strings rather than passing
+# the exception object itself further than it needs to go, the cog
+# only needs to know which flavor of failure this was
+def _reason_for_error(error: Exception) -> str:
+    if isinstance(error, youtube_source.AgeRestrictedError):
+        return "age_restricted"
+    if isinstance(error, youtube_source.RateLimitedError):
+        return "rate_limited"
+    return "unavailable"
+
 
 class GuildPlayer:
     def __init__(self, guild_id: int, queue: GuildQueue, bot):
@@ -27,6 +38,13 @@ class GuildPlayer:
         # called whenever a new track starts playing, async so the cog
         # can update the now playing message and wait on it if needed
         self.on_track_start: Optional[Callable[[Track], Awaitable[None]]] = None
+        # called whenever a track can't be played, either because it
+        # failed to resolve at all (age restriction, a persistent 403,
+        # youtube's rate limit wall) or because it started playing and
+        # then got cut off by a 403 partway through. lets the cog tell
+        # the user their song just failed instead of it looking like
+        # the bot silently skipped it for no reason
+        self.on_stream_error: Optional[Callable[[Track, str], Awaitable[None]]] = None
         self._skip_event = asyncio.Event()
         # when true, the after-playback callback skips advancing the queue.
         # needed for manual jumps (seeking) where we've already restarted
@@ -168,6 +186,21 @@ class GuildPlayer:
             return self._position_accum + (time.time() - self._segment_start)
         return self._position_accum
 
+    def _make_forbidden_callback(self, track: Track):
+        """
+        Builds the callback handed down to the ffmpeg stderr watcher
+        for a given track. That watcher runs on a plain daemon thread,
+        not the asyncio loop, so it can't just await on_stream_error
+        itself. run_coroutine_threadsafe is what makes it safe to call
+        this from that thread.
+        """
+        def _cb():
+            if self.on_stream_error:
+                asyncio.run_coroutine_threadsafe(
+                    self.on_stream_error(track, "forbidden"), self.bot.loop
+                )
+        return _cb
+
     async def play_next(self, ignore_loop: bool = False):
         """
         Pulls the next track off the queue and plays it. Gets called
@@ -181,48 +214,77 @@ class GuildPlayer:
         track. The second sees is_playing() true once it gets the lock
         and just backs off, its track stays queued and gets picked up
         on the next natural advance.
+
+        If a track fails to resolve at all (age restriction, a
+        persistent 403, youtube's rate limit wall), this doesn't just
+        give up on the whole queue, it notifies on_stream_error and
+        loops around to try whatever's next instead. That loop stays
+        inside the same _playback_lock acquisition rather than
+        recursing into play_next again, asyncio.Lock isn't reentrant
+        and a straight recursive call here would just deadlock against
+        itself.
         """
         async with self._playback_lock:
             if self.voice_client and (self.voice_client.is_playing() or self.voice_client.is_paused()):
                 logger.debug(f"[play_next] guild {self.guild_id}: already playing/paused, backing off")
                 return
 
-            track = self.queue.next(ignore_loop=ignore_loop)
-            logger.debug(f"[play_next] guild {self.guild_id}: queue.next() -> {track.title if track else None}")
+            track = None
+            audio_source = None
 
-            try:
-                if track is None and self.queue.autoplay:
-                    logger.info(f"[play_next] guild {self.guild_id}: queue is empty, autoplay is on, pulling a mix track")
-                    self._resolve_task = asyncio.ensure_future(self._pull_autoplay_track())
-                    track = await self._resolve_task
+            while True:
+                track = self.queue.next(ignore_loop=ignore_loop)
+                logger.debug(f"[play_next] guild {self.guild_id}: queue.next() -> {track.title if track else None}")
 
-                if track is None:
-                    logger.debug(f"[play_next] guild {self.guild_id}: nothing to play, staying idle")
-                    return  # queue's empty and autoplay is off (or came up dry), just sit idle
+                try:
+                    if track is None and self.queue.autoplay:
+                        logger.info(f"[play_next] guild {self.guild_id}: queue is empty, autoplay is on, pulling a mix track")
+                        self._resolve_task = asyncio.ensure_future(self._pull_autoplay_track())
+                        track = await self._resolve_task
 
-                # if the prewarm step already resolved this exact track,
-                # get_playable_source below will see stream_url set and
-                # skip straight to building the ffmpeg source instead of
-                # doing the lookup all over again
-                source_module = direct_source if track.source == "direct" else youtube_source
-                logger.info(f"[play_next] guild {self.guild_id}: resolving playable source for '{track.title}'")
-                started = time.time()
-                self._resolve_task = asyncio.ensure_future(source_module.get_playable_source(track))
-                audio_source = await self._resolve_task
-                logger.debug(
-                    f"[play_next] guild {self.guild_id}: source ready for '{track.title}' "
-                    f"in {time.time() - started:.2f}s"
-                )
-            except asyncio.CancelledError:
-                # stop_and_clear cancelled us mid-lookup, bail out quietly
-                # instead of starting a track nobody asked for anymore
-                logger.debug(f"[play_next] guild {self.guild_id}: resolution cancelled, likely a stop mid-lookup")
-                return
-            except Exception as e:
-                logger.error(f"[play_next] guild {self.guild_id}: failed to resolve source for '{track.title}': {e}")
-                raise
-            finally:
-                self._resolve_task = None
+                    if track is None:
+                        logger.debug(f"[play_next] guild {self.guild_id}: nothing to play, staying idle")
+                        return  # queue's empty and autoplay is off (or came up dry), just sit idle
+
+                    # if the prewarm step already resolved this exact track,
+                    # get_playable_source below will see stream_url set and
+                    # skip straight to building the ffmpeg source instead of
+                    # doing the lookup all over again
+                    source_module = direct_source if track.source == "direct" else youtube_source
+                    logger.info(f"[play_next] guild {self.guild_id}: resolving playable source for '{track.title}'")
+                    started = time.time()
+                    self._resolve_task = asyncio.ensure_future(
+                        source_module.get_playable_source(track, on_forbidden=self._make_forbidden_callback(track))
+                    )
+                    audio_source = await self._resolve_task
+                    logger.debug(
+                        f"[play_next] guild {self.guild_id}: source ready for '{track.title}' "
+                        f"in {time.time() - started:.2f}s"
+                    )
+                except asyncio.CancelledError:
+                    # stop_and_clear cancelled us mid-lookup, bail out quietly
+                    # instead of starting a track nobody asked for anymore
+                    logger.debug(f"[play_next] guild {self.guild_id}: resolution cancelled, likely a stop mid-lookup")
+                    return
+                except (youtube_source.AgeRestrictedError, youtube_source.StreamUnavailableError, youtube_source.RateLimitedError) as e:
+                    logger.warning(
+                        f"[play_next] guild {self.guild_id}: '{track.title}' couldn't be resolved "
+                        f"({type(e).__name__}), skipping it and trying the next track"
+                    )
+                    if self.on_stream_error:
+                        await self.on_stream_error(track, _reason_for_error(e))
+                    # this track's a bust, force ignore_loop so a looped
+                    # track doesn't just come straight back around and
+                    # fail again, then loop back and grab whatever's next
+                    ignore_loop = True
+                    continue
+                except Exception as e:
+                    logger.error(f"[play_next] guild {self.guild_id}: failed to resolve source for '{track.title}': {e}")
+                    raise
+                finally:
+                    self._resolve_task = None
+
+                break
 
             if not self.voice_client or not self.voice_client.is_connected():
                 logger.error(
@@ -290,8 +352,9 @@ class GuildPlayer:
         except asyncio.CancelledError:
             raise
         except Exception as e:
-            # not fatal, play_next just resolves it the normal way when
-            # this track's turn actually comes up
+            # not fatal, play_next just resolves it (and handles any of
+            # our specific error types) the normal way when this
+            # track's turn actually comes up
             logger.warning(f"[prewarm] guild {self.guild_id}: prewarm failed for '{track.title}': {e}")
 
     async def _pull_autoplay_track(self) -> Optional[Track]:
@@ -456,10 +519,11 @@ class GuildPlayer:
         # asking yt-dlp to re-extract it, that network round trip was
         # what made seeking feel so slow. We only actually need a fresh
         # url when a track first starts playing.
+        on_forbidden = self._make_forbidden_callback(track)
         if track.source == "direct":
-            audio_source = await direct_source.get_playable_source(track, start_seconds=new_position)
+            audio_source = await direct_source.get_playable_source(track, start_seconds=new_position, on_forbidden=on_forbidden)
         else:
-            audio_source = youtube_source.get_playable_source_from_cache(track, start_seconds=new_position)
+            audio_source = youtube_source.get_playable_source_from_cache(track, start_seconds=new_position, on_forbidden=on_forbidden)
 
         self.voice_client.play(audio_source, after=self._make_after_callback())
         self._position_accum = new_position

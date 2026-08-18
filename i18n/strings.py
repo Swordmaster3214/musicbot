@@ -18,6 +18,12 @@ STRINGS = {
         "err_play_generic": "An error occurred while processing your request: {error}",
         "err_shuffleplay_generic": "❌ An error occurred while processing your playlist: {error}",
         "err_age_restricted": "That video is age-restricted and YouTube requires a signed-in, age-verified account to view it. The bot can't play it. Try a different link or search term.",
+        "err_rate_limited": "⚠️ YouTube is rate-limiting requests right now. Please try again in a few minutes.",
+        "err_stream_unavailable": "⚠️ Couldn't get a working stream for that. Try again in a bit, or try a different link.",
+        "err_track_unavailable": "⚠️ Couldn't get **{title}** to play right now, skipping it.",
+        "err_track_rate_limited": "⚠️ YouTube is rate-limiting requests right now, skipping **{title}**. Please try again in a few minutes.",
+        "err_track_forbidden": "⚠️ **{title}** stopped playing because of a source error (403 Forbidden), this happens with some videos.",
+        "err_track_age_restricted": "⚠️ Skipped **{title}**, that video is age-restricted and needs a signed-in, age-verified account.",
 
         # queueing
         "queued_single": "Queued **{title}**.",
@@ -128,6 +134,12 @@ STRINGS = {
         "err_play_generic": "Ocurrió un error al procesar tu solicitud: {error}",
         "err_shuffleplay_generic": "❌ Ocurrió un error al procesar tu lista: {error}",
         "err_age_restricted": "Ese video tiene restricción de edad y YouTube exige una cuenta con la edad verificada e iniciada sesión para verlo. El bot no puede reproducirlo. Prueba con otro enlace o término de búsqueda.",
+        "err_rate_limited": "⚠️ YouTube está limitando las solicitudes en este momento. Inténtalo de nuevo en unos minutos.",
+        "err_stream_unavailable": "⚠️ No se pudo obtener una transmisión funcional para eso. Inténtalo de nuevo en un momento, o prueba con otro enlace.",
+        "err_track_unavailable": "⚠️ No se pudo reproducir **{title}** en este momento, saltándola.",
+        "err_track_rate_limited": "⚠️ YouTube está limitando las solicitudes en este momento, saltando **{title}**. Inténtalo de nuevo en unos minutos.",
+        "err_track_forbidden": "⚠️ **{title}** dejó de reproducirse por un error de la fuente (403 Prohibido), esto pasa con algunos videos.",
+        "err_track_age_restricted": "⚠️ Se saltó **{title}**, ese video tiene restricción de edad y requiere una cuenta con la edad verificada e iniciada sesión.",
 
         # queueing
         "queued_single": "Se añadió **{title}** a la cola.",

@@ -166,18 +166,51 @@ class GuildPlayer:
             )
 
     async def disconnect(self):
+        """
+        Disconnects from voice.
+
+        This used to check is_connected() and just drop our own
+        reference to self.voice_client whenever that came back False,
+        on the theory that "not connected" means there's nothing left
+        to disconnect. That's the same trap already documented on the
+        connect() side above though: is_connected() saying False
+        doesn't mean discord.py has actually let go of the connection
+        on its end. It keeps its own per-guild registry entry (and the
+        real voice websocket) alive independently of that flag, so
+        walking away here just abandons our reference while the bot
+        stays sitting in the channel from everyone else's point of
+        view, even though our own log says "disconnected".
+
+        Fix is the same one connect() already uses: trust discord.py's
+        own guild.voice_client over our possibly-stale tracked one
+        (it's the object that's actually registered), and call
+        disconnect(force=True) on whatever we find, connected or not.
+        force=True is what actually clears the registry entry, a plain
+        disconnect() only does the polite thing when the object still
+        thinks it's connected.
+        """
+        guild = self.bot.get_guild(self.guild_id)
+        guild_vc = guild.voice_client if guild else None
         logger.info(
             f"[disconnect] guild {self.guild_id}: disconnect requested, "
-            f"current voice_client={self.voice_client!r}"
+            f"our tracked voice_client={self.voice_client!r} "
+            f"discord.py's guild.voice_client={guild_vc!r} "
+            f"(connected={guild_vc.is_connected() if guild_vc else None})"
         )
-        if self.voice_client and self.voice_client.is_connected():
-            await self.voice_client.disconnect()
-            logger.info(f"[disconnect] guild {self.guild_id}: disconnected cleanly")
+
+        vc = guild_vc or self.voice_client
+        if vc is not None:
+            try:
+                await vc.disconnect(force=True)
+                logger.info(f"[disconnect] guild {self.guild_id}: disconnected (force=True)")
+            except Exception as e:
+                logger.warning(f"[disconnect] guild {self.guild_id}: force disconnect raised {e!r}")
         else:
             logger.warning(
-                f"[disconnect] guild {self.guild_id}: disconnect() called but "
-                f"voice_client was already None or not connected, nothing to do"
+                f"[disconnect] guild {self.guild_id}: disconnect() called but there was no "
+                f"voice client on record anywhere, nothing to do"
             )
+
         self.voice_client = None
 
     def current_position(self) -> float:
